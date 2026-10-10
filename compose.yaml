@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:////app/data/climate.db
+      AUTO_MIGRATE: "true"
+      SCHEDULER_ENABLED: "true"
+    volumes:
+      - climate-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  climate-data:

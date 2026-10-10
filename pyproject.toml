@@ -1,0 +1,43 @@
+[project]
+name = "climate-control"
+version = "0.1.0"
+description = "Private household climate monitoring and control"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic-settings>=2.8,<3",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.15,<2",
+  "psycopg[binary]>=3.2,<4",
+  "cryptography>=44",
+  "argon2-cffi>=23.1",
+  "authlib>=1.8,<2",
+  "httpx2>=2.13,<3",
+  "google-auth>=2.38,<3",
+  "requests>=2.32,<3",
+  "pyvesync>=3,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1", "httpx>=0.28,<1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/climate_control"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
