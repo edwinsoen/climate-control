@@ -134,7 +134,7 @@ test('history charts collapse, preserve gaps, and show values only on hover', as
   await expect(card.getByTestId('history-reading')).toHaveCount(0)
   const bounds = await chart.boundingBox()
   expect(bounds).not.toBeNull()
-  await chart.hover({ position: { x: bounds!.width * 0.55, y: bounds!.height / 2 } })
+  await chart.hover({ position: { x: bounds!.width * 0.65, y: bounds!.height / 2 } })
   await expect(card.getByTestId('history-reading')).toContainText('20 µg/m³')
   await expect(card.getByTestId('history-selection')).toHaveClass(/\bquality-poor\b/)
   await expect(chart.getByTestId('history-reading')).not.toContainText('Range')

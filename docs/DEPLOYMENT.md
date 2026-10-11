@@ -100,6 +100,16 @@ The person creating the job needs permission to act as the scheduler service acc
 
 Check `/health/ready`, sign in, connect a VeSync account, and compare its device state with the VeSync app. Confirm the retrieval time advances after a scheduler execution, with no browser open. Check account errors and scheduler execution logs for failures.
 
-For updates, build a new image tag, update and execute the migration job, then deploy the service with that image. Back up the database and retain the encryption key. Restore both together. Avoid running incompatible schema migrations alongside old revisions; this initial migration creates the schema only.
+For updates, build a new image tag, update and execute the migration job, then deploy the service with that image. Back up the database and retain the encryption key. Restore both together. Avoid running incompatible schema migrations alongside old revisions; follow the applicable upgrade notes below.
 
 Persistent leases protect account refreshes during retries and revision overlap. Each account poll times out after four minutes; a request can process three accounts at once. The 30-minute request deadline accommodates ordinary household deployments.
+
+## Optional outdoor monitoring
+
+Configure `AQICN_API_TOKEN` using the [README instructions](../README.md#outdoor-air-quality). On Cloud Run, keep the token in Secret Manager and bind `AQICN_API_TOKEN=YOUR_SECRET:VERSION`. Local Compose reads it from `.env`. A token from OpenAQ is incompatible. The backend needs outbound HTTPS access to `api.waqi.info`; AQICN uses the token in its query string, so request URL logging is disabled. Users search for their city/station inside the app; no location environment variable or geocoding service is used.
+
+Apply migrations through `0007` before running this version. The migration clears old OpenAQ selection/search state, retains legacy records separately, and creates AQICN tables. Stop the old backend before migration locally. Re-select a station in the app after upgrading. The local scheduler or `/internal/poll` Cloud Scheduler job records fetched AQI observations even with no devices connected. Current fetches default to five minutes (`OUTDOOR_POLL_INTERVAL_SECONDS`); measurement staleness defaults to three hours (`OUTDOOR_STALE_AFTER_SECONDS`). No automatic backfill runs, because the public station-feed API has no documented history endpoint.
+
+Check station name, overall AQI and pollutant indices, agency attribution, inline measurement ages, and errors after a scheduler execution. `/api/outdoor` also exposes the last successful retrieval timestamp. `/health/ready` verifies migration readiness. Scheduler JSON includes `outdoor_checked`; fixed log outcomes exclude tokens and locations. Selection and recorded history persist across restarts. Changing the token requires a service restart/deployment; changing or removing the selected station is immediate. Invalid-token errors pause polling until credentials or station selection change. AQICN use remains within this app's private household scope; consult its published data-use terms before any public/paid deployment or data redistribution.
+
+Browser location requires HTTPS in deployed environments; localhost is supported for development. City/station search remains available when browser positioning fails. The unresolved local Chrome issue is recorded in [browser location behavior](FOUNDATION.md#browser-location).

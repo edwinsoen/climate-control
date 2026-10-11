@@ -6,6 +6,9 @@ import type { Account } from './accounts/types'
 import { AirQualityChart } from './devices/AirQualityChart'
 import { DeviceControls, type ControlOptions } from './devices/DeviceControls'
 import { UserMenu } from './UserMenu'
+import { OutdoorCard, type Outdoor } from './outdoor/OutdoorCard'
+import { CardHeader } from './components/CardHeader'
+import { AirReading } from './components/AirReading'
 import './styles.css'
 
 type Session = {
@@ -49,19 +52,12 @@ function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: 
     return value === null || value === undefined || value === 'unknown' ? 'Unknown' : `${value}${suffix}`
   }
   return <article className="device-card" data-testid="device-card">
-    <div className="card-heading">
-      <div className="device-icon"><Icon /></div>
-      <span className={`badge ${status === 'Connected' ? 'good' : 'muted'}`}><i />{status}</span>
-    </div>
-    <p className="eyebrow">{device.account_label}</p>
-    <h3 data-testid="device-name">{device.name}</h3><p className="model">{device.model}</p>
+    <CardHeader name={device.name} testId="device-name" description={<>{device.account_label} · {device.model}</>}
+      actions={<span className={`badge ${status === 'Connected' ? 'good' : 'muted'}`}><i />{status}</span>} />
     {device.supported && <>
-      <div className="main-reading"><div><span>PM2.5</span><strong data-testid="device-pm25">{reading('pm25')}</strong></div>
-        <div className="reading-meta">
-          {device.capabilities.includes('pm25') && device.state.pm25 != null && <><span className="unit">µg/m³</span><span aria-hidden="true">·</span></>}
-          <small className="reading-time">{ago(device.retrieved_at)}{device.stale && device.retrieved_at && ' · Previous readings'}</small>
-        </div>
-      </div>
+      <AirReading label="PM2.5" value={reading('pm25')} valueTestId="device-pm25"
+        unit={device.capabilities.includes('pm25') && device.state.pm25 != null ? 'µg/m³' : undefined}
+        age={<span className="reading-time">{ago(device.retrieved_at)}{device.stale && device.retrieved_at && ' · Previous readings'}</span>} />
       <DeviceControls device={device} onControl={async (command) => {
         const updated = await api<Device & { control_confirmed: boolean }>(`/api/devices/${device.id}/control`, { method: 'POST', body: JSON.stringify(command) })
         onChange(updated)
@@ -84,6 +80,8 @@ function App() {
   const sessionRef = useRef<Session | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [devices, setDevices] = useState<Device[]>([])
+  const [outdoor, setOutdoor] = useState<Outdoor | null>(null)
+  const outdoorRevision = useRef(0)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
@@ -114,10 +112,13 @@ function App() {
   }, [updateSession])
 
   const load = useCallback(async () => {
-    const [nextAccounts, nextDevices] = await Promise.all([
+    const revision = outdoorRevision.current
+    const [nextAccounts, nextDevices, nextOutdoor] = await Promise.all([
       api<Account[]>('/api/accounts'), api<Device[]>('/api/devices'),
+      api<Outdoor>('/api/outdoor'),
     ])
     setAccounts(nextAccounts)
+    if (revision === outdoorRevision.current) setOutdoor(nextOutdoor)
     setDevices((current) => nextDevices.map((incoming) => newerDevice(current.find((item) => item.id === incoming.id), incoming)))
   }, [api])
 
@@ -134,6 +135,29 @@ function App() {
     document.addEventListener('visibilitychange', visible)
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', visible) }
   }, [session?.authenticated, load])
+
+  useEffect(() => {
+    if (!session?.authenticated || !outdoor?.loading) return
+    const locationId = outdoor.location_id
+    const controller = new AbortController()
+    let pending = false
+    const reload = async () => {
+      if (pending || document.hidden) return
+      pending = true
+      const revision = outdoorRevision.current
+      try {
+        const next = await api<Outdoor>('/api/outdoor', { signal: controller.signal })
+        if (!controller.signal.aborted && revision === outdoorRevision.current && next.location_id === locationId) {
+          outdoorRevision.current++
+          setOutdoor(next)
+        }
+      } catch (err) { if (!controller.signal.aborted) setError((err as Error).message) }
+      finally { pending = false }
+    }
+    void reload()
+    const timer = window.setInterval(() => { void reload() }, 1000)
+    return () => { controller.abort(); window.clearInterval(timer) }
+  }, [api, session?.authenticated, outdoor?.loading, outdoor?.location_id])
 
   useEffect(() => {
     if (editing === undefined) return
@@ -216,6 +240,8 @@ function App() {
         {accounts.map((account) => <AccountCard key={account.id} account={account}
           onReconnect={(value) => { setError(''); setEditing(value) }} onRemove={remove} />)}
       </section>}
+      {!accountsPage && outdoor && <OutdoorCard key={outdoor.location_id} outdoor={outdoor} api={api}
+        onChange={(outdoor) => { outdoorRevision.current++; setOutdoor(outdoor) }} />}
       {!accountsPage && <section data-testid="devices-section" aria-labelledby="devices-title">
         <div className="section-heading"><h2 id="devices-title" data-testid="devices-title">Your devices</h2></div>
         <section className="device-grid" aria-label="Devices">{devices.map((device) => <DeviceCard key={device.id} device={device} api={api}

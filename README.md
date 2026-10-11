@@ -1,10 +1,10 @@
 # Climate Control
 
-A private household app for monitoring and controlling home climate devices. Currently supports Levoit air purifiers through VeSync, with multiple accounts, power and fan controls, and recorded PM2.5 history.
+A private household app for monitoring and controlling home climate devices. Supports Levoit air purifiers through VeSync, with multiple accounts, power and fan controls, recorded PM2.5 history, and optional outdoor AQI monitoring through AQICN.
 
-Runs as a container locally or on Cloud Run. The React UI and FastAPI service share one origin, with Google or local administrator login and encrypted provider credentials. Outdoor climate data and rule/AI automation are planned; see the [PRD](docs/PRD.md).
+Runs as a container locally or on Cloud Run. The React UI and FastAPI service share one origin, with Google or local administrator login and encrypted provider credentials. Outdoor weather data and rule/AI automation are planned; see the [PRD](docs/PRD.md).
 
-Overview shows device cards. Manage connections on Accounts, connect an account from the top bar, and sign out through the user avatar menu.
+Overview shows device cards and a configured outdoor station. Manage connections on Accounts, connect an account from the top bar, and sign out through the user avatar menu.
 
 ## Run locally
 
@@ -56,6 +56,32 @@ For UI development, run `npm run dev` in `frontend/` and set `APP_URL=http://loc
 Each supported purifier has a power switch and one fan selector: Auto, Sleep, and the model's numbered manual levels. Controls update optimistically, then read status immediately. Unconfirmed settings expire after 90 seconds and show the latest reported state. Only the device being changed disables its controls; other commands wait for the account's shared request pacing.
 
 Collapsible PM2.5 charts cover 24 hours, 7 days, and 30 days, with readings shown on hover. Recording uses existing polls and valid control readbacks; it does not import past VeSync app data. History persists in the database, with 30-day retention.
+
+## Outdoor air quality
+
+Outdoor monitoring uses [AQICN / World Air Quality Index](https://aqicn.org/api/) and works without connected purifiers. Register for your own [AQICN API token](https://aqicn.org/data-platform/token/) and set it in `.env` or deployment configuration:
+
+```dotenv
+AQICN_API_TOKEN=your-api-token
+OUTDOOR_POLL_INTERVAL_SECONDS=300
+OUTDOOR_STALE_AFTER_SECONDS=10800
+```
+
+The token stays on the backend and is never returned to the browser or stored in the application database. Restart the backend after changing it. `OPENAQ_API_KEY` is no longer used; OpenAQ tokens cannot authenticate with AQICN.
+
+On Overview, choose **Set location**, search for a city or station name, select an AQICN result, and **Save location**. Results show the station name, AQI, and reported update time. Search excludes stations with missing AQI or updates older than seven calendar days and shows up to 20 matches. The shared household selection persists in the database. **Change location** and **Remove location** are in the station card's **…** menu. While choosing a replacement, the current card is hidden; **Cancel** restores it, and **Save location** displays the new station. These changes take effect without restarting the service.
+
+**Use my location** first requests the browser's location, then asks AQICN for the local station using those coordinates. It requires HTTPS or localhost, browser permission, and working device location services. A loader shows progress; permission denial, unavailable positioning, timeout, and AQICN errors have separate messages. Location lookup can use a browser fix up to five minutes old and allows 30 seconds to acquire a fix. A Chrome location timeout remains unresolved in local development; city search works independently. See [browser location behavior and the known issue](docs/FOUNDATION.md#browser-location).
+
+Saving shows the search AQI immediately as a preview and starts a full station fetch through the collector. A loader stays visible while readings are fetched, with the dashboard checking its cache every second until the first fetch succeeds or reports an error. Search previews are not recorded as history because search timestamps may lack a timezone.
+
+Outdoor and device cards share the same header and reading layout. The outdoor card shows source attribution below the station name and the measurement age beside each AQI value, separated by a middot. Device readings show their retrieval age beside the unit. AQICN returns indices, not µg/m³ concentrations. Outdoor indices remain separate from indoor purifier concentrations. Current reads and charts use cached database data; opening the dashboard does not contact AQICN. The collector refreshes the station every five minutes by default. Measurement age determines staleness; failures retain valid cached readings and timestamps. Persistent leases, request pacing, and backoff serialize collection and explicit searches across workers. Invalid-token failures pause collection until the token or selection changes.
+
+Each fetched observation is recorded using the source timestamp, with duplicate timestamps corrected rather than appended. History starts collapsed; expanding it shows the AQI/pollutant selector beside the 24h, 7d, and 30d period controls. Records have 30-day retention. AQICN's public feed API has no documented station-history endpoint, so earlier readings cannot be backfilled automatically. Forecast values and its separate city-aggregate historical datasets are not stored as station observations. History starts accumulating after selection.
+
+Existing installations must migrate through `0007` before starting this version (`uv run python -m climate_control.cli migrate`; Compose migrates automatically). The migration clears the previous OpenAQ selection and search results and creates separate AQICN tables. Select an AQICN station again. Legacy OpenAQ history remains separate in the old tables and expires under normal 30-day pruning; overlapping provider station IDs cannot mix indices with concentrations.
+
+AQICN and the originating agencies are attributed in the UI. This is a private household app; see [AQICN's data-use terms](https://aqicn.org/api/) before changing how its data is shared or deploying a public or paid service.
 
 ## Authentication
 

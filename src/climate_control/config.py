@@ -2,12 +2,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     database_url: str = "sqlite:///./data/climate.db"
     encryption_key: str
@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     poll_interval_seconds: int = Field(default=60, ge=60, le=3600)
     request_spacing_seconds: float = Field(default=1.0, ge=1.0)
     stale_after_seconds: int = Field(default=180, ge=180)
+    aqicn_api_token: SecretStr = SecretStr("")
+    outdoor_poll_interval_seconds: int = Field(default=300, ge=60, le=3600)
+    outdoor_stale_after_seconds: int = Field(default=10800, ge=60)
     frontend_dir: Path = Path("frontend/dist")
     session_ttl_seconds: int = Field(default=86400, ge=300, le=604800)
 

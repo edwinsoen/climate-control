@@ -4,7 +4,11 @@
 
 Improve home air quality and comfort by controlling connected climate devices with clear, adaptable rules. The first release controls supported Levoit air purifiers through the Python `pyvesync` library. The system is a container with a web UI and runs locally or on Google Cloud Run.
 
-## First release
+## Current implementation
+
+The app supports VeSync account connections, purifier controls, recorded indoor history, and optional AQICN outdoor monitoring. Users select a shared household station by city/station search in the app; current readings and recorded history use the database cache. AQICN's public station-feed API does not provide a documented history endpoint, so outdoor history accumulates from new observations without automatic backfill. Browser location is also available, with an unresolved local Chrome timeout documented in [the service foundation](FOUNDATION.md#browser-location). Weather data, automation, and AI planning remain planned.
+
+## Target first release
 
 The user connects a VeSync account, selects purifiers, sets a home location and preferences, and enables automation. The app reads device state and available indoor measurements, fetches nearby outdoor air quality and weather data, then chooses appropriate purifier settings. Users can see why a setting was chosen and take manual control at any time.
 
@@ -58,5 +62,5 @@ Add other climate devices and ecosystems through device adapters, plus additiona
 ## References
 
 - [pyvesync supported devices and API](https://github.com/webdjoe/pyvesync)
-- [OpenAQ data coverage and freshness](https://docs.openaq.org/about/about), [latest measurements](https://docs.openaq.org/resources/latest)
+- [AQICN / WAQI API and data-use terms](https://aqicn.org/api/)
 - [Cloud Run service runtime and persistence](https://docs.cloud.google.com/run/docs/developing), [instance scaling](https://docs.cloud.google.com/run/docs/about-instance-autoscaling)

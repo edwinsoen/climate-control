@@ -29,6 +29,12 @@ flowchart LR
 | `GET /auth/google/callback` | Consume the Google authorization flow | State, browser cookie, verified identity |
 | `GET /api/accounts` | Account connection status and refresh deadlines | Session |
 | `GET /api/devices/{id}/history?hours=24` | Recorded air-quality history for 24 hours, 7 days, or 30 days | Session |
+| `GET /api/outdoor` | Cached outdoor station, AQI readings, freshness, errors, and backfill status | Session |
+| `GET /api/outdoor/history?hours=24` | Overall and pollutant AQI history for 24 hours, 7 days, or 30 days | Session |
+| `POST /api/outdoor/stations/search` | Search AQICN stations by city or station name | Session + CSRF |
+| `POST /api/outdoor/stations/nearby` | Find the AQICN station for browser geolocation | Session + CSRF |
+| `PUT /api/outdoor/location` | Select a station from the latest search results | Session + CSRF |
+| `DELETE /api/outdoor/location` | Clear the saved location and stop collection | Session + CSRF |
 | `POST /api/devices/{id}/control` | Set power, mode, or manual fan level | Session + CSRF |
 | `POST /api/devices/{id}/status` | Read one device's current provider status | Session + CSRF |
 | `POST /api/accounts` | Save credentials and attempt initial discovery | Session + CSRF |
@@ -36,7 +42,7 @@ flowchart LR
 | `DELETE /api/accounts/{id}` | Delete credentials and associated snapshots | Session + CSRF |
 | `GET /api/devices` | Cached purifier snapshots | Session |
 | `POST /api/accounts/{id}/refresh` | Attempt a refresh using the shared cooldown | Session + CSRF |
-| `POST /internal/poll` | Refresh all due accounts | Verified scheduler OIDC token |
+| `POST /internal/poll` | Refresh due accounts and collect outdoor data | Verified scheduler OIDC token |
 | `GET /health/live` | Process health | Public |
 | `GET /health/ready` | Database/schema readiness | Public |
 
@@ -66,6 +72,32 @@ Controls update optimistically. Only the card being changed is disabled during i
 
 ## Air-quality history
 
+Indoor history is independent of the outdoor station described below.
+
 The installed pyvesync library exposes current purifier readings, not the VeSync app's historical series. The app records fresh, online readings from existing polls and confirmed control readbacks in `device_readings`; history adds no VeSync requests. PM2.5, PM1, PM10, and qualitative air quality are stored when available. Failed, offline, repeated, and invalid readings do not create samples. History begins with the first successful poll after migration `0003` and survives restarts.
 
 The history endpoint reads the database only, accepts `hours=24`, `168`, or `720`, and returns approximately 360 time buckets per metric. PM buckets include the average, minimum, maximum, and sample count; qualitative buckets show the worst reported level. Missing buckets remain empty and charts leave gaps. The UI charts PM2.5, colored by the recorded air-quality category (gray when unavailable). History sections start collapsed. When expanded, the heading shows 24h, 7d, and 30d buttons; charts update automatically and show the date/time and PM2.5 value inside the chart on hover. Records older than 30 days are pruned during polling; removing an account or device also removes its history.
+
+## Outdoor air quality
+
+AQICN / WAQI is the outdoor source. `AQICN_API_TOKEN` enables access; users select their shared household station in the app. The application no longer uses OpenAQ or Open-Meteo. Overall `aqi` and individual `pm25`/`pm10` values are AQI, not concentrations. Indoor concentrations and outdoor indices remain separate. No device automation consumes these readings.
+
+`POST /api/outdoor/stations/search` accepts a trimmed `query` (2–120 characters), calls AQICN's `v2/search/` endpoint, and returns up to 20 matching stations with names, numeric AQI, update times, and any available coordinates. Results without valid AQI, duplicate IDs, and stations last updated more than seven calendar days ago are excluded. `POST /api/outdoor/stations/nearby` accepts strict bounded numeric latitude/longitude and uses AQICN's geolocation feed to return the local station. There is no geocoding service. Both actions require session and CSRF, share the collector's durable lease/pacing/backoff, and leave the selected station unchanged.
+
+`PUT /api/outdoor/location` selects a positive `location_id` from the latest successful search, persists its coordinates where available, revokes pending workers, and makes that station due. The response includes the search AQI as a separate `preview` and `loading: true`, then a response background task invokes the collector immediately, respecting the existing leases, pacing, and backoff. The preview and pending flag persist in station metadata across reloads. A valid full feed replaces the preview; a failed read stops the loader and retains the preview and any prior cached measurements. Search AQI never creates observations or fabricates measurement timestamps. `DELETE /api/outdoor/location` stops collection. These writes require session and CSRF. Each provider token stays backend-only; request URLs, tokens, queries, and coordinates are not logged.
+
+`GET /api/outdoor` reads cached data only. It returns source `aqicn`, source availability, saved selection, coordinates, station name/link/attributions, metric capabilities and values with unit `AQI`, source measurement times, staleness, retrieval time, and fixed safe errors. Its backfill status is `unsupported`. AQICN's `time.iso`, or local `time.s` with explicit `time.tz`, supplies the measurement timestamp. Malformed feeds and mismatched station IDs cannot replace cached values or timestamps. Missing pollutant values retain the prior valid reading with its original age. The browser refreshes this cache every 15 seconds while visible, or every second while a saved selection is loading. Pending cache requests are canceled when selection changes, and stale responses cannot overwrite a newer selection.
+
+Collection runs through the existing local scheduler or `/internal/poll`, independent of device accounts. A tick claims a 120-second tokenized lease, makes one AQICN station-feed request when due, and times out after 90 seconds. Requests start at least two seconds apart across workers; provider backoff is shared with searches and preserved across station changes, including failures returned after a request loses its lease. Obsolete workers may extend shared cooldowns but cannot replace station readings or search results, release another worker’s lease, or shorten an existing cooldown. Each station polls every five minutes by default. Invalid-token errors suspend collection until the token or station changes. Other failures retry with bounded exponential backoff; rate limits respect `Retry-After`. Scheduler JSON includes `outdoor_checked`.
+
+Migration `0007` creates `aqicn_stations` and `aqicn_readings` and clears the former OpenAQ selection/discovery/deadlines. Migrations `0005`/`0006` remain in the schema chain. Legacy OpenAQ tables retain concentrations separately; provider IDs may overlap without mixing histories. AQICN observations are unique by station + metric + measurement timestamp, with corrections upserted and older observations unable to replace newer current values. Active and legacy readings expire after 30 days during scheduled pruning, even without a selected station.
+
+`GET /api/outdoor/history?hours=24|168|720` returns database-only bucketed mean/min/max/count series for overall AQI and the two pollutant AQIs. Charts use AQI units and refresh every minute while expanded. The public AQICN station-feed API does not provide a documented historical endpoint: no automatic station backfill is attempted. Forecasts and city-wide historical aggregates are not observations of the selected station. AQICN and originating agency attributions are preserved in the UI.
+
+Outdoor and device cards share header and reading components. Outdoor agency/source attribution appears below the station name. Each outdoor value shows its measurement age inline; device readings show their retrieval age beside the unit, separated by a middot. History starts collapsed, with the outdoor metric selector beside the period controls inside the expanded section. The station card's **…** menu contains **Change location** and **Remove location**. Editing hides the current station card until saving succeeds or the user cancels; canceling preserves the saved selection.
+
+### Browser location
+
+**Use my location** invokes `navigator.geolocation.getCurrentPosition` and awaits its success/error callback before requesting `/api/outdoor/stations/nearby`. The options are `enableHighAccuracy: false`, `maximumAge: 300000`, and `timeout: 30000`. HTTPS or localhost and browser/device location access are required. The form displays a loader while waiting, distinguishes denied permission, unavailable positioning, and timeout, and preserves separate AQICN request errors. Errors appear in the form; they are caught rather than thrown to the console. City search does not depend on browser geolocation.
+
+Known unresolved issue: regular Chrome 150 at `http://localhost:5173` timed out after 30 seconds despite the user selecting **Allow while visiting** and enabling macOS location services for Chrome. A standalone native browser check also returned error code `3` and permission state `prompt`, with a secure context, visible top-level page, allowed geolocation policy, and the native method intact. A fresh Chrome profile launched through macOS, with a saved site grant and no runtime permission override, returned a native location successfully. The cause in the regular profile remains unconfirmed; the timeout and error handling changes are not a confirmed fix. Temporary diagnostic pages were removed. Automated browser tests cover delayed positioning, positioning failures, and AQICN errors using mocked locations/providers.

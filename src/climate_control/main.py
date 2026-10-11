@@ -13,18 +13,29 @@ from starlette.staticfiles import StaticFiles
 from climate_control.api import router
 from climate_control.config import Settings
 from climate_control.db import database
+from climate_control.outdoor import OutdoorCollector
 from climate_control.polling import Poller
+from climate_control.providers.aqicn import AQICNProvider
 from climate_control.providers.vesync import VeSyncProvider
 from climate_control.security import Vault
 
 
-def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
+def create_app(settings: Settings | None = None, provider=None, outdoor_provider=None) -> FastAPI:
     settings = settings or Settings()
     engine, sessions = database(settings.database_url)
     schema_revision = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     vault = Vault(settings.encryption_key)
+    outdoor = OutdoorCollector(
+        sessions,
+        settings,
+        outdoor_provider or AQICNProvider(settings.aqicn_api_token.get_secret_value()),
+    )
     poller = Poller(
-        sessions, settings, vault, provider or VeSyncProvider(settings.request_spacing_seconds)
+        sessions,
+        settings,
+        vault,
+        provider or VeSyncProvider(settings.request_spacing_seconds),
+        outdoor=outdoor,
     )
 
     @asynccontextmanager
@@ -50,6 +61,7 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
     app.state.sessions = sessions
     app.state.vault = vault
     app.state.poller = poller
+    app.state.outdoor = outdoor
     app.include_router(router)
 
     @app.exception_handler(RequestValidationError)

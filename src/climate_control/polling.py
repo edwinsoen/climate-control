@@ -28,11 +28,14 @@ class RefreshResult:
 
 
 class Poller:
-    def __init__(self, sessions, settings: Settings, vault: Vault, provider: DeviceProvider):
+    def __init__(
+        self, sessions, settings: Settings, vault: Vault, provider: DeviceProvider, outdoor=None
+    ):
         self.sessions = sessions
         self.settings = settings
         self.vault = vault
         self.provider = provider
+        self.outdoor = outdoor
         self.concurrency = asyncio.Semaphore(3)
 
     def claim(self, account_id: str) -> tuple[Account | None, RefreshResult]:
@@ -282,8 +285,16 @@ class Poller:
                     )
                 )
             )
-        results = await asyncio.gather(*(self.refresh(account_id) for account_id in ids))
-        return {"checked": len(ids), "refreshed": sum(r.status == "refreshed" for r in results)}
+        work = [self.refresh(account_id) for account_id in ids]
+        if self.outdoor is not None:
+            work.append(self.outdoor.tick())
+        outcomes = await asyncio.gather(*work)
+        results = outcomes[: len(ids)]
+        return {
+            "checked": len(ids),
+            "refreshed": sum(r.status == "refreshed" for r in results),
+            "outdoor_checked": outcomes[-1]["checked"] if self.outdoor is not None else 0,
+        }
 
     async def run(self) -> None:
         while True:

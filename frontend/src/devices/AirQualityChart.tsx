@@ -1,31 +1,46 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 
-type Metric = 'pm25' | 'pm1' | 'pm10' | 'air_quality'
+type Metric = 'aqi' | 'pm25' | 'pm1' | 'pm10' | 'air_quality'
 type Point = { recorded_at: number; value: number; min: number; max: number; count: number }
 type History = {
-  source: 'recorded'; start: number; end: number; interval_seconds: number
-  metrics: Record<Metric, Point[]>
+  source: 'recorded' | 'aqicn'; start: number; end: number; interval_seconds: number
+  metrics: Partial<Record<Metric, Point[]>>
 }
 type FetchHistory = (path: string, options?: RequestInit) => Promise<History>
 const qualityClasses = ['quality-unknown', 'quality-excellent', 'quality-good', 'quality-fair', 'quality-poor']
-const width = 320, height = 180, left = 32, right = 8, top = 44, bottom = 30
+const height = 220, left = 44, right = 12, top = 44, bottom = 32
 
-function valueLabel(value: number) {
-  return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} µg/m³`
+function valueLabel(value: number, unit: string) {
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit}`
 }
 
-export function AirQualityChart({ deviceId, name, capabilities, fetchHistory }: {
+export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, metric = 'pm25', historyPath, unit = 'µg/m³', metricSelector }: {
   deviceId: string; name: string; capabilities: string[]; fetchHistory: FetchHistory
+  metric?: 'aqi' | 'pm25' | 'pm10'; historyPath?: string; unit?: string
+  metricSelector?: ReactNode
 }) {
   const [hours, setHours] = useState(24)
   const [history, setHistory] = useState<History | null>(null)
   const [error, setError] = useState('')
   const [active, setActive] = useState<number | null>(null)
   const [expanded, setExpanded] = useState(false)
+  const [width, setWidth] = useState(320)
+  const content = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const contentId = useId()
   const gradientId = useId().replace(/:/g, '')
-  const hasSensor = capabilities.includes('pm25')
+  const hasSensor = capabilities.includes(metric)
+  const metricLabel = metric === 'aqi' ? 'AQI' : `${metric === 'pm25' ? 'PM2.5' : 'PM10'}${unit === 'AQI' ? ' AQI' : ''}`
+
+  useEffect(() => {
+    if (!content.current) return
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) setWidth(Math.max(240, Math.round(entry.contentRect.width)))
+    })
+    observer.observe(content.current)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     if (!hasSensor || !expanded) return
@@ -36,7 +51,7 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory }: 
       if (pending) return
       pending = true
       try {
-        const data = await fetchHistory(`/api/devices/${deviceId}/history?hours=${hours}`, { signal: controller.signal })
+        const data = await fetchHistory(`${historyPath ?? `/api/devices/${deviceId}/history`}?hours=${hours}`, { signal: controller.signal })
         if (!controller.signal.aborted) { setHistory(data); setError(''); setActive(null) }
       } catch {
         if (!controller.signal.aborted) setError('History could not be loaded.')
@@ -47,10 +62,10 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory }: 
     const visible = () => { if (!document.hidden) void reload() }
     document.addEventListener('visibilitychange', visible)
     return () => { controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', visible) }
-  }, [deviceId, hours, hasSensor, expanded, fetchHistory])
+  }, [deviceId, hours, hasSensor, expanded, fetchHistory, historyPath, metric])
 
-  const points = history?.metrics.pm25 ?? []
-  const qualityByTime = new Map(history?.metrics.air_quality.map((point) => [point.recorded_at, point.value]))
+  const points = history?.metrics[metric] ?? []
+  const qualityByTime = new Map(history?.metrics.air_quality?.map((point) => [point.recorded_at, point.value]))
   const level = (point: Point) => qualityByTime.get(point.recorded_at) ?? 0
   const qualityClass = (point: Point) => qualityClasses[level(point)] ?? qualityClasses[0]
   const max = Math.max(5, Math.ceil(Math.max(...points.map((point) => point.max), 0) / 5) * 5)
@@ -81,24 +96,27 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory }: 
 
   return <section className="air-history" aria-labelledby={titleId}>
     <div className="history-header">
-      <span id={titleId} data-testid="history-title">PM2.5 history</span>
-      {expanded && <div className="history-periods" data-testid="history-periods" role="group" aria-label={`History period for ${name}`}>
-        {[[24, '24h'], [168, '7d'], [720, '30d']].map(([period, label]) => <button key={period} type="button"
-          data-testid={`history-period-${label}`} aria-pressed={hours === period} onClick={() => { setHours(Number(period)); setActive(null) }}>{label}</button>)}
-      </div>}
-      <button type="button" className="history-toggle" data-testid="history-toggle" aria-label={`PM2.5 history for ${name}`} aria-expanded={expanded}
+      <span id={titleId} data-testid="history-title">{metricLabel} history</span>
+      <button type="button" className="history-toggle" data-testid="history-toggle" aria-label={`${metricLabel} history for ${name}`} aria-expanded={expanded}
         aria-controls={contentId} onClick={() => { setExpanded(!expanded); setActive(null) }}><span aria-hidden="true" /></button>
     </div>
-    <div id={contentId} hidden={!expanded}>
-    {expanded && (!hasSensor ? <p className="history-empty">PM2.5 readings unavailable.</p> : <>
+    <div id={contentId} ref={content} hidden={!expanded}>
+    {expanded && <div className="history-controls" data-testid="history-controls">
+      {metricSelector}
+      <div className="history-periods" data-testid="history-periods" role="group" aria-label={`History period for ${name}`}>
+        {[[24, '24h'], [168, '7d'], [720, '30d']].map(([period, label]) => <button key={period} type="button"
+          data-testid={`history-period-${label}`} aria-pressed={hours === period} onClick={() => { setHours(Number(period)); setActive(null) }}>{label}</button>)}
+      </div>
+    </div>}
+    {expanded && (!hasSensor ? <p className="history-empty">{metricLabel} readings unavailable.</p> : <>
       {error && <p className="inline-error" role="status">{error}</p>}
       {!history && !error && <p className="history-empty">Loading history…</p>}
       {history && points.length === 0 && <p className="history-empty">No readings recorded in this period.</p>}
       {history && points.length > 0 && <>
         <svg className="history-chart" data-testid="history-chart" viewBox={`0 0 ${width} ${height}`} role="img"
-          aria-label={`PM2.5 history for ${name}. ${points.length} recorded intervals.`}
+          aria-label={`${metricLabel} history for ${name}. ${points.length} recorded intervals.`}
           onPointerEnter={inspectPoint} onPointerMove={inspectPoint} onPointerLeave={() => setActive(null)}>
-          <title>PM2.5 history for {name}</title>
+          <title>{metricLabel} history for {name}</title>
           <defs>{segments.map((segment, index) => <linearGradient key={index} id={`${gradientId}-${index}`} gradientUnits="userSpaceOnUse"
             x1={x(segment[0].recorded_at)} x2={x(segment[segment.length - 1].recorded_at)} y1={0} y2={0}>
             {segment.map((point, pointIndex) => <stop key={pointIndex} offset={segment.length === 1 ? 0 :
@@ -120,7 +138,7 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory }: 
             <circle className="history-dot" cx={x(selected.recorded_at)} cy={y(selected.value)} />
             <text className="history-reading" data-testid="history-reading" role="status" x={left} y={22}>
               {new Date(selected.recorded_at * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-              {' · '}{valueLabel(selected.value)}
+              {' · '}{valueLabel(selected.value, unit)}
             </text>
           </g>}
         </svg>

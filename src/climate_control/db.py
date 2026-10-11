@@ -74,6 +74,93 @@ class DeviceReading(Base):
     air_quality: Mapped[float | None] = mapped_column(nullable=True)
 
 
+class OutdoorConfiguration(Base):
+    __tablename__ = "outdoor_configuration"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    location_id: Mapped[int | None] = mapped_column(nullable=True)
+    latitude: Mapped[float | None] = mapped_column(nullable=True)
+    longitude: Mapped[float | None] = mapped_column(nullable=True)
+    discovery: Mapped[dict] = mapped_column(JSON, default=dict)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[float] = mapped_column(default=0.0)
+    next_request_at: Mapped[float] = mapped_column(default=0.0)
+    retry_at: Mapped[float] = mapped_column(default=0.0)
+
+
+class LegacyOutdoorStation(Base):
+    __tablename__ = "outdoor_stations"
+    location_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    sensors: Mapped[dict] = mapped_column(JSON, default=dict)
+    readings: Mapped[dict] = mapped_column(JSON, default=dict)
+    credential_version: Mapped[str] = mapped_column(String(64))
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    backfill_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    auth_error: Mapped[bool] = mapped_column(default=False)
+    failure_count: Mapped[int] = mapped_column(default=0)
+    last_success_at: Mapped[float | None] = mapped_column(nullable=True)
+    next_poll_at: Mapped[float] = mapped_column(default=0.0)
+    next_metadata_at: Mapped[float] = mapped_column(default=0.0)
+    next_request_at: Mapped[float] = mapped_column(default=0.0)
+    retry_at: Mapped[float] = mapped_column(default=0.0)
+    next_reconcile_at: Mapped[float] = mapped_column(default=0.0)
+    backfill_cursor: Mapped[dict] = mapped_column(JSON, default=dict)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[float] = mapped_column(default=0.0)
+
+
+class LegacyOutdoorReading(Base):
+    __tablename__ = "outdoor_readings"
+    __table_args__ = (
+        UniqueConstraint("location_id", "sensor_id", "recorded_at"),
+        Index("ix_outdoor_readings_series", "location_id", "sensor_id", "recorded_at"),
+        Index("ix_outdoor_readings_recorded_at", "recorded_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_id: Mapped[int] = mapped_column(
+        ForeignKey("outdoor_stations.location_id", ondelete="CASCADE")
+    )
+    sensor_id: Mapped[int]
+    metric: Mapped[str] = mapped_column(String(10))
+    recorded_at: Mapped[float]
+    retrieved_at: Mapped[float]
+    value: Mapped[float]
+
+
+class OutdoorStation(Base):
+    __tablename__ = "aqicn_stations"
+    location_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    readings: Mapped[dict] = mapped_column(JSON, default=dict)
+    credential_version: Mapped[str] = mapped_column(String(64))
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    auth_error: Mapped[bool] = mapped_column(default=False)
+    failure_count: Mapped[int] = mapped_column(default=0)
+    last_success_at: Mapped[float | None] = mapped_column(nullable=True)
+    next_poll_at: Mapped[float] = mapped_column(default=0.0)
+    next_request_at: Mapped[float] = mapped_column(default=0.0)
+    retry_at: Mapped[float] = mapped_column(default=0.0)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[float] = mapped_column(default=0.0)
+
+
+class OutdoorReading(Base):
+    __tablename__ = "aqicn_readings"
+    __table_args__ = (
+        UniqueConstraint("location_id", "metric", "recorded_at"),
+        Index("ix_aqicn_readings_series", "location_id", "metric", "recorded_at"),
+        Index("ix_aqicn_readings_recorded_at", "recorded_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_id: Mapped[int] = mapped_column(
+        ForeignKey("aqicn_stations.location_id", ondelete="CASCADE")
+    )
+    metric: Mapped[str] = mapped_column(String(10))
+    recorded_at: Mapped[float]
+    retrieved_at: Mapped[float]
+    value: Mapped[float]
+
+
 class LoginSession(Base):
     __tablename__ = "sessions"
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)

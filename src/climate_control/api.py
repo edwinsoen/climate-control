@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from authlib.integrations.httpx_client import AsyncOAuth2Client
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from pydantic import (
@@ -16,6 +16,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StringConstraints,
     field_validator,
     model_validator,
 )
@@ -25,6 +26,14 @@ from starlette.responses import RedirectResponse
 
 from climate_control.db import Account, Device, LoginSession, LoginThrottle, OAuthFlow, now
 from climate_control.history import history_view
+from climate_control.outdoor import (
+    OutdoorBusy,
+    outdoor_history,
+    outdoor_view,
+    selected_location,
+    set_location,
+)
+from climate_control.providers.aqicn import OutdoorError
 from climate_control.providers.base import DeviceCommand, ProviderError
 from climate_control.security import create_session, digest, verify_password
 
@@ -525,6 +534,89 @@ def control_response(device_id, result, request):
             **device_view(device, db.get(Account, device.account_id), request),
             "control_confirmed": result.control_confirmed,
         }
+
+
+class OutdoorCoordinates(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False, strict=True)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False, strict=True)
+
+
+class OutdoorLocationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    location_id: StrictInt = Field(gt=0)
+
+
+class OutdoorSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: Annotated[
+        str, StringConstraints(strict=True, strip_whitespace=True, min_length=2, max_length=120)
+    ]
+
+
+@router.post("/api/outdoor/stations/search", dependencies=[Depends(authenticated)])
+async def search_outdoor_stations(body: OutdoorSearchInput, request: Request):
+    try:
+        stations = await request.app.state.outdoor.search(body.query)
+    except OutdoorBusy as exc:
+        raise HTTPException(
+            429,
+            "Outdoor updates are busy. Try again shortly.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
+    except OutdoorError as exc:
+        raise HTTPException(503, str(exc)) from None
+    return {"stations": stations}
+
+
+@router.post("/api/outdoor/stations/nearby", dependencies=[Depends(authenticated)])
+async def nearby_outdoor_stations(body: OutdoorCoordinates, request: Request):
+    try:
+        stations = await request.app.state.outdoor.nearby(body.latitude, body.longitude)
+    except OutdoorBusy as exc:
+        raise HTTPException(
+            429,
+            "Outdoor updates are busy. Try again shortly.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
+    except OutdoorError as exc:
+        raise HTTPException(503, str(exc)) from None
+    return {"stations": stations}
+
+
+@router.put("/api/outdoor/location", dependencies=[Depends(authenticated)])
+def save_outdoor_location(
+    body: OutdoorLocationInput, request: Request, background_tasks: BackgroundTasks
+):
+    with request.app.state.sessions() as db:
+        try:
+            set_location(db, body.location_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        result = outdoor_view(db, request.app.state.settings)
+    background_tasks.add_task(request.app.state.outdoor.tick)
+    return result
+
+
+@router.delete("/api/outdoor/location", dependencies=[Depends(authenticated)])
+def clear_outdoor_location(request: Request):
+    with request.app.state.sessions() as db:
+        set_location(db, None)
+        return outdoor_view(db, request.app.state.settings)
+
+
+@router.get("/api/outdoor", dependencies=[Depends(authenticated)])
+def current_outdoor(request: Request):
+    with request.app.state.sessions() as db:
+        return outdoor_view(db, request.app.state.settings)
+
+
+@router.get("/api/outdoor/history", dependencies=[Depends(authenticated)])
+def current_outdoor_history(request: Request, hours: int = 24):
+    if hours not in {24, 168, 720}:
+        raise HTTPException(422, "Choose a history period of 24 hours, 7 days, or 30 days.")
+    with request.app.state.sessions() as db:
+        return outdoor_history(db, selected_location(db), hours, time.time())
 
 
 @router.get("/api/devices/{device_id}/history", dependencies=[Depends(authenticated)])

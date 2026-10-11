@@ -19,6 +19,7 @@ environment = {
     "DATABASE_URL": "sqlite:////app/data/smoke.db",
     "AUTO_MIGRATE": "true",
     "SCHEDULER_ENABLED": "true",
+    "AQICN_API_TOKEN": "",
 }
 browser = requests.Session()
 

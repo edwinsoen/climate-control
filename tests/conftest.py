@@ -130,6 +130,7 @@ def app(request, tmp_path):
         scheduler_enabled=False,
         scheduler_service_account="scheduler@example.iam.gserviceaccount.com",
         scheduler_audience="https://climate.example.com",
+        aqicn_api_token="",
     )
     application = create_app(settings, FakeProvider())
     yield application
