@@ -2,9 +2,11 @@
 
 A private household app for monitoring and controlling home climate devices. Supports Levoit air purifiers through VeSync, with multiple accounts, power and fan controls, paired air-quality and setting history, and optional outdoor AQI monitoring through AQICN.
 
-Runs as a container locally or on Cloud Run. The React UI and FastAPI service share one origin, with Google or local administrator login and encrypted provider credentials. Outdoor weather data and rule/AI automation are planned; see the [PRD](docs/PRD.md).
+Runs as a container locally or on Cloud Run. The React UI and FastAPI service share one origin, with Google or local administrator login and encrypted provider credentials. Per-device rules control power and fan settings, with a form editor and authenticated agent planning interface. Model invocation and outdoor weather data remain planned; see the [PRD](docs/PRD.md).
 
 Overview shows device cards and a configured outdoor station. Manage connections on Accounts, connect an account from the top bar, and sign out through the user avatar menu.
+
+Select **Edit rules** on a device to open its dedicated rules page. Create named rules with time/reading conditions, preview them, and enable automation. Direct controls pause rules for one hour by default. Choose manual or agent ownership per device; connecting a planning worker is a separate step. See [device automation](docs/AUTOMATION.md) for the schema and agent protocol. Apply migration `0009` before starting this version; existing devices remain automation-disabled.
 
 ## Run locally
 

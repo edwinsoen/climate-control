@@ -210,3 +210,63 @@ def database(database_url: str):
             cursor.close()
 
     return engine, sessionmaker(engine, expire_on_commit=False)
+
+
+class Automation(Base):
+    __tablename__ = "device_automation"
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner: Mapped[str] = mapped_column(String(10), default="manual")
+    enabled: Mapped[bool] = mapped_column(default=False)
+    generation: Mapped[int] = mapped_column(default=0)
+    revision: Mapped[int] = mapped_column(default=0)
+    paused_until: Mapped[float] = mapped_column(default=0.0)
+    pause_seconds: Mapped[int] = mapped_column(default=3600)
+    runtime: Mapped[dict] = mapped_column(JSON, default=dict)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[float] = mapped_column(default=0.0)
+    next_review_at: Mapped[float] = mapped_column(default=0.0)
+    last_review_request_at: Mapped[float] = mapped_column(default=0.0)
+
+
+class RuleRevision(Base):
+    __tablename__ = "rule_revisions"
+    __table_args__ = (UniqueConstraint("device_id", "revision"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    revision: Mapped[int]
+    owner: Mapped[str] = mapped_column(String(10))
+    ruleset: Mapped[dict] = mapped_column(JSON)
+    reason: Mapped[str] = mapped_column(String(1000))
+    created_at: Mapped[float] = mapped_column(default=now)
+
+
+class AutomationEvent(Base):
+    __tablename__ = "automation_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[float] = mapped_column(default=now, index=True)
+    revision: Mapped[int]
+    details: Mapped[dict] = mapped_column(JSON)
+
+
+class PlanningJob(Base):
+    __tablename__ = "planning_jobs"
+    # One durable coalescing inbox per device; a new request gets a new request ID.
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True
+    )
+    request_id: Mapped[str] = mapped_column(String(36), default=new_id)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    generation: Mapped[int]
+    base_revision: Mapped[int]
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[float] = mapped_column(default=now)
+    available_at: Mapped[float] = mapped_column(default=0.0)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[float] = mapped_column(default=0.0)
+    attempts: Mapped[int] = mapped_column(default=0)
+    claimed_reasons: Mapped[int] = mapped_column(default=0)

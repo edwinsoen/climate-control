@@ -230,3 +230,76 @@ label small { display: block; margin-top: 7px; font-size: 10px; color: #97a08f; 
 .outdoor-station-option { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
 .outdoor-station-option input { width: auto; margin: 0; }
 .outdoor-station-option small { display: block; font-weight: 400; margin-top: 4px; }
+
+.device-rule-summary { border-top: 1px solid #e4e9e2; margin-top: 18px; padding-top: 12px; }
+.device-rule-summary > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.device-rule-summary .subtle { margin: 4px 0 0; font-size: 12px; }
+.rules-page { max-width: 1200px; margin: 0 auto; }
+.rules-back { display: inline-block; margin-bottom: 26px; font-size: 14px; color: #58705f; }
+.rules-back:hover { text-decoration: underline; }
+.rules-page-heading h1 { font-size: clamp(28px, 4vw, 40px); letter-spacing: -1px; }
+.rules-page-heading .subtle { margin-bottom: 24px; }
+.rules-toolbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; padding: 16px 20px; background: #fff; border: 1px solid #d4ddd5; border-radius: 10px; box-shadow: 0 4px 16px #233c3408; }
+.rules-toolbar > span { font-size: 13px; color: #58705f; }
+.rules-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
+.automation-editor { display: grid; gap: 20px; min-width: 0; }
+.automation-editor label { display: grid; gap: 5px; min-width: 0; font-size: 13px; margin-bottom: 0; }
+.automation-editor input, .automation-editor select, .automation-editor textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.automation-editor input, .automation-editor select { margin-top: 0; }
+.automation-editor textarea { font-family: monospace; resize: vertical; padding: 12px; border: 1px solid #d4ddd5; border-radius: 8px; margin-bottom: 12px; }
+.automation-editor button:not(.button) { min-height: 38px; border: 1px solid #d4ddd5; border-radius: 8px; padding: 8px 12px; background: #fff; color: #304b3e; font-size: 12px; }
+.automation-editor button.text-button { border: 0; padding: 6px 0; background: transparent; justify-self: start; text-align: left; }
+.automation-editor button.danger { color: #9a4f3c; }
+.automation-editor button:not(.button):hover:not(:disabled) { background: #edf2ec; }
+.automation-editor textarea:focus-visible { outline: 3px solid #8cae94; outline-offset: 3px; }
+.automation-form { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 20px; }
+.rules-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.rules-section-heading h2 { margin: 0 0 8px; }
+.rules-section-heading .subtle { margin: 0; }
+.rules-empty { padding: 36px; text-align: center; border: 1px dashed #b9cbbc; border-radius: 12px; background: #fff; }
+.rules-empty p { color: #708179; }
+.automation-rule { border: 1px solid #d4ddd5; border-radius: 12px; margin: 0; padding: 24px; min-width: 0; background: #fff; }
+.automation-rule > legend { padding: 0 10px; font-size: 13px; font-weight: 600; color: #58705f; }
+.rule-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 20px; }
+.rule-heading input { font-size: 17px; font-weight: 550; }
+.rule-heading-actions { display: flex; gap: 4px; }
+.rule-heading .rule-icon-button { width: 44px; height: 44px; padding: 0; }
+.automation-editor .rule-details > summary { color: #58705f; font-size: 13px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
+.rule-part { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 12px; padding: 18px 0; border-top: 1px solid #e4e9e2; }
+.rule-part > h3 { font-size: 14px; margin: 10px 0 0; color: #58705f; }
+.rule-part-body { display: grid; gap: 12px; min-width: 0; }
+.rule-hint { margin: 0; color: #708179; font-size: 13px; line-height: 1.6; }
+.automation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.automation-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.automation-condition, .automation-window { display: grid; gap: 12px; border: 1px solid #e4e9e2; border-radius: 8px; padding: 16px; min-width: 0; background: #fafbf9; }
+.automation-days { display: flex; flex-wrap: wrap; gap: 10px; }
+.automation-days label { display: flex; gap: 6px; align-items: center; }
+.automation-days input { width: 18px; min-height: 18px; margin: 0; accent-color: #2f5040; }
+.rules-panel { border: 1px solid #d4ddd5; padding: 22px; border-radius: 12px; background: #fff; min-width: 0; display: grid; gap: 14px; }
+.rules-panel legend { padding: 0 8px; font-weight: 550; }
+.rules-panel h2 { margin: 0; font-size: 18px; }
+.rules-panel .subtle { margin: 0; }
+.rules-status { margin: 0; color: #2f5040; font-size: 14px; font-weight: 600; }
+.automation-editor details { min-width: 0; }
+.automation-editor summary { cursor: pointer; font-size: 14px; font-weight: 550; }
+.automation-editor details[open] > summary { margin-bottom: 16px; }
+.automation-editor details[open] > :not(summary) { margin-top: 14px; }
+.automation-preview, .automation-editor li { overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
+.automation-preview ul, .rules-events { padding-left: 18px; margin-bottom: 0; }
+.rules-events li { margin-bottom: 12px; }
+.rules-events time { display: block; color: #708179; font-size: 11px; }
+@media (max-width: 1000px) {
+  .rules-layout { grid-template-columns: minmax(0, 1fr); }
+  .rules-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .rules-toolbar { flex-direction: column; align-items: stretch; padding: 12px; }
+  .rules-toolbar .automation-buttons { display: grid; grid-template-columns: 1fr; }
+  .rules-toolbar .button { padding: 9px 12px; font-size: 12px; }
+  .rules-section-heading { flex-direction: column; }
+  .automation-rule, .rules-panel { padding: 16px; }
+  .rule-part { grid-template-columns: 1fr; gap: 8px; }
+  .rule-part > h3 { margin: 0; }
+  .automation-fields, .rules-sidebar { grid-template-columns: 1fr; }
+  .automation-condition, .automation-window { padding: 12px; }
+}

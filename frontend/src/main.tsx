@@ -5,6 +5,7 @@ import { AccountCard } from './accounts/AccountCard'
 import type { Account } from './accounts/types'
 import { AirQualityChart } from './devices/AirQualityChart'
 import { DeviceControls, type ControlOptions } from './devices/DeviceControls'
+import { AutomationPage, type AutomationSummary } from './devices/AutomationPage'
 import { UserMenu } from './UserMenu'
 import { OutdoorCard, type Outdoor } from './outdoor/OutdoorCard'
 import { CardHeader } from './components/CardHeader'
@@ -19,6 +20,7 @@ type Device = {
   id: string; account_id: string; account_label: string; name: string; model: string
   supported: boolean; capabilities: string[]; state: Record<string, string | number | null>
   retrieved_at: string | null; stale: boolean; error: string | null
+  automation?: AutomationSummary
   controls: ControlOptions; control_available: boolean; control_retry_at: string | null
 }
 
@@ -71,6 +73,13 @@ function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: 
       </dl>
     </>}
     {device.error && <p className="inline-error">{device.error}</p>}
+    {device.supported && <div className="device-rule-summary">
+      <div><span>Rules · {device.automation?.enabled ? device.automation.owner === 'agent' ? 'Agent-managed' : 'Manual' : 'Disabled'}</span>
+        <a className="text-button" data-testid="device-rules-link" href={'/devices/' + device.id + '/rules'}>Edit rules →</a>
+      </div>
+      {(device.automation?.paused_until ?? 0) > Date.now() / 1000 && <p className="subtle">Paused until {new Date(device.automation!.paused_until * 1000).toLocaleTimeString()}</p>}
+      {device.automation?.enabled && device.automation.summary?.decision && <p className="subtle">{device.automation.summary.decision.explanation}</p>}
+    </div>}
     <AirQualityChart deviceId={device.id} name={device.name} capabilities={device.capabilities} fetchHistory={api} />
   </article>
 }
@@ -88,6 +97,7 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState<Account | null | undefined>(undefined)
   const accountsPage = window.location.pathname === '/accounts'
+  const rulesDeviceId = /^\/devices\/([^/]+)\/rules\/?$/.exec(window.location.pathname)?.[1]
 
   const updateSession = useCallback((value: Session) => {
     sessionRef.current = value
@@ -240,9 +250,10 @@ function App() {
         {accounts.map((account) => <AccountCard key={account.id} account={account}
           onReconnect={(value) => { setError(''); setEditing(value) }} onRemove={remove} />)}
       </section>}
-      {!accountsPage && outdoor && <OutdoorCard key={outdoor.location_id} outdoor={outdoor} api={api}
+      {rulesDeviceId && <AutomationPage deviceId={rulesDeviceId} api={api} />}
+      {!accountsPage && !rulesDeviceId && outdoor && <OutdoorCard key={outdoor.location_id} outdoor={outdoor} api={api}
         onChange={(outdoor) => { outdoorRevision.current++; setOutdoor(outdoor) }} />}
-      {!accountsPage && <section data-testid="devices-section" aria-labelledby="devices-title">
+      {!accountsPage && !rulesDeviceId && <section data-testid="devices-section" aria-labelledby="devices-title">
         <div className="section-heading"><h2 id="devices-title" data-testid="devices-title">Your devices</h2></div>
         <section className="device-grid" aria-label="Devices">{devices.map((device) => <DeviceCard key={device.id} device={device} api={api}
           onChange={(updated) => setDevices((current) => current.map((item) =>

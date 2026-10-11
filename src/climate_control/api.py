@@ -416,6 +416,22 @@ def list_devices(request: Request):
 
 
 def device_view(device: Device, account: Account, request: Request) -> dict:
+    from climate_control.db import Automation, PlanningJob
+
+    with request.app.state.sessions() as db:
+        automation = db.get(Automation, device.id)
+        job = db.get(PlanningJob, device.id)
+        automation_view = (
+            {
+                "owner": automation.owner,
+                "enabled": automation.enabled,
+                "paused_until": automation.paused_until,
+                "summary": automation.runtime.get("summary"),
+                "pending_review": bool(job and job.status in {"pending", "claimed"}),
+            }
+            if automation
+            else None
+        )
     current = time.time()
     stale_after = max(
         request.app.state.settings.stale_after_seconds,
@@ -424,6 +440,7 @@ def device_view(device: Device, account: Account, request: Request) -> dict:
     return {
         "id": device.id,
         "account_id": account.id,
+        "automation": automation_view,
         "account_label": account.label,
         "name": device.name,
         "model": device.model,
@@ -478,6 +495,10 @@ async def control_device(device_id: str, payload: ControlInput, request: Request
             raise HTTPException(409, "This device is offline.")
         if payload.power is None and device.state.get("power") != "on":
             raise HTTPException(409, "Turn on the device first.")
+        from climate_control.automation_api import pause_for_manual
+
+        pause_for_manual(db, device_id)
+        db.commit()
     result = await request.app.state.poller.queued_control(
         device_id, DeviceCommand(**payload.model_dump())
     )

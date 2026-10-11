@@ -8,7 +8,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select, update
 
 from climate_control.config import Settings
-from climate_control.db import Account, Device
+from climate_control.db import Account, Automation, Device
 from climate_control.history import prune_readings, record_reading
 from climate_control.providers.base import DeviceCommand, DeviceProvider, PollResult, ProviderError
 from climate_control.security import Vault
@@ -121,7 +121,9 @@ class Poller:
                 return result
             await asyncio.sleep(min(0.25, remaining))
 
-    async def control(self, device_id: str, command: DeviceCommand | None) -> RefreshResult:
+    async def control(
+        self, device_id: str, command: DeviceCommand | None, *, guard=None
+    ) -> RefreshResult:
         async with self.concurrency:
             current = time.time()
             with self.sessions() as db:
@@ -148,6 +150,9 @@ class Poller:
                         else Account.next_control_at,
                     )
                 ).rowcount
+                if claimed and guard is not None and not guard(db, device, current):
+                    db.rollback()
+                    return RefreshResult("superseded")
                 db.commit()
                 account = db.get(Account, device.account_id)
                 if not account:
@@ -264,6 +269,9 @@ class Poller:
                     # Connectivity may be known even when fresh sensor readings are unavailable.
                     device.state = {**(device.state or {}), "connectivity": "offline"}
                 record_reading(db, device, snapshot, current)
+                db.flush()
+                if db.get(Automation, device.id) is None:
+                    db.add(Automation(device_id=device.id))
             # A failed or incomplete poll never removes existing devices.
             if complete and failure is None:
                 seen = {snapshot.provider_id for snapshot in result.devices}
@@ -290,7 +298,9 @@ class Poller:
             work.append(self.outdoor.tick())
         outcomes = await asyncio.gather(*work)
         results = outcomes[: len(ids)]
+        automation_checked = await self.automation.tick() if hasattr(self, "automation") else 0
         return {
+            "automation_checked": automation_checked,
             "checked": len(ids),
             "refreshed": sum(r.status == "refreshed" for r in results),
             "outdoor_checked": outcomes[-1]["checked"] if self.outdoor is not None else 0,

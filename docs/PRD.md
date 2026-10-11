@@ -6,7 +6,7 @@ Improve home air quality and comfort by controlling connected climate devices wi
 
 ## Current implementation
 
-The app supports VeSync account connections, purifier controls, recorded indoor history, and optional AQICN outdoor monitoring. Indoor observations pair air quality with observed power, mode, selected fan speed, and running fan speed; charts overlay settings on the same time axis, and the authenticated history API exposes exact paired observations for future rule planning. Users select a shared household station by city/station search in the app; current readings and recorded history use the database cache. AQICN's public station-feed API does not provide a documented history endpoint, so outdoor history accumulates from new observations without automatic backfill. Browser location is also available, with an unresolved local Chrome timeout documented in [the service foundation](FOUNDATION.md#browser-location). Weather data, automation, and AI planning remain planned.
+The app supports VeSync account connections, purifier controls, paired indoor air-quality/setting history, optional AQICN outdoor monitoring, and deterministic per-device automation. A form editor and versioned JSON rules support time windows, indoor/outdoor/other-device conditions, missing-data branches, and power/fan actions. Devices have one manual or agent owner; the durable planning interface accepts validated proposals but does not invoke a model. See [device automation](AUTOMATION.md). Users select a shared household outdoor station through city/station search. Outdoor history accumulates from new observations without automatic backfill. Browser location has an unresolved local Chrome timeout documented in [the service foundation](FOUNDATION.md#browser-location). Weather data and hosted AI planning remain planned.
 
 ## Target first release
 
@@ -28,7 +28,7 @@ Outdoor readings provide context; they must not be treated as measurements insid
 
 - Poll device state and external data on configurable intervals, respecting provider limits. Use timestamps and freshness limits; mark stale or unavailable data visibly.
 - Support power, mode, and fan speed only where the model exposes them. Confirm commands against subsequent device state and retry transient failures with bounded backoff.
-- Apply explicit minimum and maximum settings, quiet-hour limits, minimum time between changes, and hysteresis to prevent rapid switching.
+- Express setting bounds and quiet-hour behavior in the active ruleset. Enforce capabilities, minimum time between changes, and persistence across distinct readings to prevent rapid switching. There is no separate user-owned setting-limit layer in the current engine.
 - Use indoor measurements, when available, as the primary feedback for indoor air cleaning. Use outdoor air quality, weather, and trends to adjust targets and anticipate changes; never infer an indoor reading from outdoor data.
 - When data, AI, or a device connection fails, retain the last valid safe rule set where possible. Avoid speculative changes, surface the fault, and resume when inputs recover.
 
@@ -36,9 +36,9 @@ Outdoor readings provide context; they must not be treated as measurements insid
 
 - Run a deterministic control loop that evaluates the active rules and issues device commands. Every action records its inputs, rule, and reason.
 - Periodically ask a configurable AI provider to propose a rule set and the input-change thresholds that should trigger early reconsideration. Also reconsider when a threshold is crossed or the user changes preferences.
-- Give AI only the data needed to plan. It may propose targets, schedules, and thresholds; it cannot send device commands or bypass user limits.
+- Give AI only the data needed to plan. It proposes schedules, settings, and thresholds through the ruleset interface; the interpreter owns command execution and enforces capabilities and provider pacing. Manual editing of agent rules requires explicit ownership takeover.
 - Validate proposed rules against a strict schema and safety bounds before activation. Reject invalid or contradictory proposals and keep the previous rules. Store rule versions and the reason for each update.
-- Provide a usable default rule set when AI is unconfigured or unavailable. AI use and its cost controls are configurable.
+- Preserve the last valid ruleset when AI is unavailable. Without rules, leave the device unchanged; do not invent pollution thresholds or settings. Model invocation and its cost controls remain planned.
 
 ## Deployment and data
 

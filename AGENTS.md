@@ -1,6 +1,6 @@
 # Climate Control
 
-Private household climate monitoring and control app. Supports Levoit purifiers through VeSync and outdoor AQI through AQICN; other providers, weather, and rule/AI automation are planned. Read `docs/PRD.md` for scope and `docs/FOUNDATION.md` for behavior.
+Private household climate monitoring and control app. Supports Levoit purifiers through VeSync, outdoor AQI through AQICN, and deterministic device rules with an agent planning interface; other providers, weather, and model invocation are planned. Read `docs/PRD.md` for scope, `docs/FOUNDATION.md` for service behavior, and `docs/AUTOMATION.md` for rules and agent integration.
 
 ## Structure
 

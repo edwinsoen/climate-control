@@ -11,6 +11,8 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from climate_control.api import router
+from climate_control.automation import RuleEngine
+from climate_control.automation_api import router as automation_router
 from climate_control.config import Settings
 from climate_control.db import database
 from climate_control.outdoor import OutdoorCollector
@@ -38,6 +40,8 @@ def create_app(settings: Settings | None = None, provider=None, outdoor_provider
         outdoor=outdoor,
     )
 
+    poller.automation = RuleEngine(sessions, settings, poller)
+
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(poller.run()) if settings.scheduler_enabled else None
@@ -63,6 +67,7 @@ def create_app(settings: Settings | None = None, provider=None, outdoor_provider
     app.state.poller = poller
     app.state.outdoor = outdoor
     app.include_router(router)
+    app.include_router(automation_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
