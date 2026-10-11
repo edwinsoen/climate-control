@@ -34,6 +34,14 @@ def test_provider_migration_preserves_existing_accounts(tmp_path):
             )
         """)
         )
+    command.upgrade(config, "0003")
+    with engine.begin() as connection:
+        connection.execute(
+            text("""
+            INSERT INTO device_readings (device_id, recorded_at, pm25)
+            VALUES ('existing-device', 123, 8)
+        """)
+        )
     command.upgrade(config, "head")
     with engine.connect() as connection:
         account = connection.execute(text("SELECT * FROM accounts")).mappings().one()
@@ -44,9 +52,21 @@ def test_provider_migration_preserves_existing_accounts(tmp_path):
         assert account["next_control_at"] == 0
         assert connection.execute(text("SELECT controls FROM devices")).scalar_one() == "{}"
         assert connection.execute(text("SELECT id FROM devices")).scalar_one() == "existing-device"
+        reading = connection.execute(text("SELECT * FROM device_readings")).mappings().one()
+        assert reading["pm25"] == 8
+        assert (
+            reading["power"],
+            reading["mode"],
+            reading["fan_level"],
+            reading["reported_fan_level"],
+        ) == (None, None, None, None)
     columns = {column["name"]: column for column in inspect(engine).get_columns("accounts")}
     assert not columns["provider"]["nullable"]
     assert columns["provider"]["default"] == "'vesync'"
+    command.downgrade(config, "0007")
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT pm25 FROM device_readings")).scalar_one() == 8
     engine.dispose()
 
 

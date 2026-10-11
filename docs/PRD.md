@@ -6,7 +6,7 @@ Improve home air quality and comfort by controlling connected climate devices wi
 
 ## Current implementation
 
-The app supports VeSync account connections, purifier controls, recorded indoor history, and optional AQICN outdoor monitoring. Users select a shared household station by city/station search in the app; current readings and recorded history use the database cache. AQICN's public station-feed API does not provide a documented history endpoint, so outdoor history accumulates from new observations without automatic backfill. Browser location is also available, with an unresolved local Chrome timeout documented in [the service foundation](FOUNDATION.md#browser-location). Weather data, automation, and AI planning remain planned.
+The app supports VeSync account connections, purifier controls, recorded indoor history, and optional AQICN outdoor monitoring. Indoor observations pair air quality with observed power, mode, selected fan speed, and running fan speed; charts overlay settings on the same time axis, and the authenticated history API exposes exact paired observations for future rule planning. Users select a shared household station by city/station search in the app; current readings and recorded history use the database cache. AQICN's public station-feed API does not provide a documented history endpoint, so outdoor history accumulates from new observations without automatic backfill. Browser location is also available, with an unresolved local Chrome timeout documented in [the service foundation](FOUNDATION.md#browser-location). Weather data, automation, and AI planning remain planned.
 
 ## Target first release
 

@@ -33,7 +33,7 @@ test('set and change location in the app, inspect outdoor history, then remove i
   await card.getByTestId('history-toggle').click()
   await expect(card.getByTestId('history-chart')).toBeVisible()
   await card.getByTestId('history-controls').getByTestId('outdoor-history-metric').selectOption('pm10')
-  await expect(card.getByTestId('history-title')).toHaveText('PM10 AQI history')
+  await expect(card.getByTestId('history-title')).toHaveText('History')
   await expect(card.getByTestId('history-chart')).toHaveAttribute('aria-label', /PM10 AQI history/)
   const response = page.waitForResponse('**/api/outdoor/history?hours=720')
   await card.getByTestId('history-period-30d').click()
@@ -119,6 +119,53 @@ test('outdoor failures keep cached values and show missing measurements', async 
   await expect(card).toContainText('Outdoor data could not be updated.')
   await expect(card.getByTestId('outdoor-history-metric')).toHaveCount(0)
 })
+
+for (const pending of [true, false]) {
+  test(`outdoor history without observations skips loading after ${pending ? 'selection' : 'a failed fetch'}`, async ({ page }) => {
+    const selected = {
+      available: true, configured: true, source: 'aqicn', location_id: 123,
+      coordinates: null, station: { name: 'Empty station', url: null, attribution: [] },
+      capabilities: [], metrics: {}, preview: null, loading: pending, last_success_at: null,
+      error: pending ? null : 'Outdoor data could not be updated. Updates will retry automatically.',
+      backfill: { status: 'unsupported', error: null },
+    }
+    let current: object = selected
+    let historyRequests = 0
+    let finishHistory!: () => void
+    const historyPending = new Promise<void>((resolve) => { finishHistory = resolve })
+    await page.route('**/api/outdoor', (route) => route.fulfill({ json: current }))
+    await page.route('**/api/outdoor/history?hours=*', async (route) => {
+      historyRequests++
+      await historyPending
+      const end = Date.now() / 1000
+      await route.fulfill({ json: {
+        source: 'aqicn', start: end - 86400, end, interval_seconds: 240,
+        metrics: { aqi: [{ recorded_at: end - 60, value: 42, min: 42, max: 42, count: 1 }] },
+      } })
+    })
+    await page.goto('/')
+    await page.getByTestId('login-password').fill('test-admin-password')
+    await page.getByTestId('login-submit').click()
+    const card = page.getByTestId('outdoor-card')
+    await card.getByTestId('history-toggle').click()
+    await expect(card.getByTestId('history-unavailable')).toHaveText('AQI readings unavailable.')
+    await expect(card.getByTestId('history-loading')).toHaveCount(0)
+    expect(historyRequests).toBe(0)
+    if (!pending) await expect(card).toContainText('Outdoor data could not be updated.')
+
+    // The expanded history starts fetching when the first valid station reading arrives.
+    current = {
+      ...selected, loading: false, error: null, capabilities: ['aqi'],
+      metrics: { aqi: { value: 42, unit: 'AQI', measured_at: new Date().toISOString(), stale: false } },
+    }
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+    await expect(card.getByTestId('history-loading')).toBeVisible()
+    finishHistory()
+    await expect(card.getByTestId('history-chart')).toBeVisible()
+    await expect(card.getByTestId('history-loading')).toHaveCount(0)
+    expect(historyRequests).toBe(1)
+  })
+}
 
 test('location access denial allows city search and empty search results', async ({ page }) => {
   await page.addInitScript(() => {

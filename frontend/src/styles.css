@@ -137,6 +137,20 @@ h3 { font-size: 18px; font-weight: 550; margin-bottom: 5px; }
 .history-cursor { stroke: #8cae94; stroke-dasharray: 3 3; }
 .history-empty { min-height: 80px; display: grid; place-items: center; color: #708179; font-size: 14px; margin: 12px 0 0; }
 .history-chart .history-reading { font-size: 14px; fill: #536956; }
+.history-note { color: #708179; font-size: 14px; }
+.history-settings-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: #536956; }
+.setting-manual { --setting-color: #677caa; }
+.setting-auto { --setting-color: #54816a; }
+.setting-sleep { --setting-color: #9675a4; }
+.setting-off, .setting-unknown { --setting-color: #91978e; }
+.history-settings-legend [class^="setting-"]::before { content: ''; display: inline-block; width: 12px; height: 8px; margin-right: 4px; background: var(--setting-color); }
+.history-setting-band { fill: var(--setting-color); opacity: .08; }
+.history-setting-strip { fill: var(--setting-color); opacity: .65; }
+.setting-off .history-setting-band { opacity: .14; }
+.history-fan-line { fill: none; stroke: #5f6c7a; stroke-width: 1.5; stroke-dasharray: 5 3; }
+.history-fan-dot { fill: #5f6c7a; }
+.history-chart .history-fan-label { font-size: 12px; }
+.history-fan-legend::before { content: ''; display: inline-block; width: 14px; margin-right: 4px; border-top: 2px dashed #5f6c7a; vertical-align: middle; }
 .empty-state { text-align: center; border: 1px dashed #d8e0d4; border-radius: 12px; padding: 60px 22px; margin-top: 15px; }
 .empty-icon { display: grid; place-items: center; width: 60px; height: 60px; border-radius: 50%; color: #799476; background: #eaf0e7; margin: 0 auto 22px; }
 .empty-state h2 { font-family: Georgia, serif; font-size: 29px; font-weight: 400; }

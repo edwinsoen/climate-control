@@ -1,6 +1,6 @@
 # Climate Control
 
-A private household app for monitoring and controlling home climate devices. Supports Levoit air purifiers through VeSync, with multiple accounts, power and fan controls, recorded PM2.5 history, and optional outdoor AQI monitoring through AQICN.
+A private household app for monitoring and controlling home climate devices. Supports Levoit air purifiers through VeSync, with multiple accounts, power and fan controls, paired air-quality and setting history, and optional outdoor AQI monitoring through AQICN.
 
 Runs as a container locally or on Cloud Run. The React UI and FastAPI service share one origin, with Google or local administrator login and encrypted provider credentials. Outdoor weather data and rule/AI automation are planned; see the [PRD](docs/PRD.md).
 
@@ -55,7 +55,11 @@ For UI development, run `npm run dev` in `frontend/` and set `APP_URL=http://loc
 
 Each supported purifier has a power switch and one fan selector: Auto, Sleep, and the model's numbered manual levels. Controls update optimistically, then read status immediately. Unconfirmed settings expire after 90 seconds and show the latest reported state. Only the device being changed disables its controls; other commands wait for the account's shared request pacing.
 
-Collapsible PM2.5 charts cover 24 hours, 7 days, and 30 days, with readings shown on hover. Recording uses existing polls and valid control readbacks; it does not import past VeSync app data. History persists in the database, with 30-day retention.
+Collapsible **History** charts cover 24 hours, 7 days, and 30 days. Shaded bands and a coloured strip show Manual, Auto, Sleep, and Off; a dashed fan-speed step line uses the right-hand Fan axis alongside PM2.5 history. Hover or touch shows readings in the space above the plot without a popup covering the chart. Touch selections remain visible after release. Selected and reported running speeds are stored separately. Settings are recorded even without sensor readings, including while off; missing observations leave gaps. Recording uses existing polls and valid status/control readbacks; it does not import past VeSync app data or treat an unconfirmed command as an observed setting. History persists in the database, with 30-day retention.
+
+For future rule planning, `/api/devices/{id}/history?hours=24&raw=true` returns exact timestamped observations pairing settings with available air-quality readings. It requires the same session authentication as the chart. Pages contain up to 1,000 observations by default (`limit=1..5000`); pass a non-null `next_after` as `after` to get the next page.
+
+Existing installations must run `uv run python -m climate_control.cli migrate` through migration `0008` and restart the backend before using setting history (Compose migrates automatically). The backend does not reload code automatically. Existing air-quality history is preserved; past settings remain unknown and new setting history starts on the next valid observation. Initially the overlay is a small marker at the right edge of the chart, then grows as observations accumulate. See the [upgrade instructions](docs/DEPLOYMENT.md#purifier-setting-history-upgrade-0008).
 
 ## Outdoor air quality
 
@@ -79,7 +83,7 @@ Outdoor and device cards share the same header and reading layout. The outdoor c
 
 Each fetched observation is recorded using the source timestamp, with duplicate timestamps corrected rather than appended. History starts collapsed; expanding it shows the AQI/pollutant selector beside the 24h, 7d, and 30d period controls. Records have 30-day retention. AQICN's public feed API has no documented station-history endpoint, so earlier readings cannot be backfilled automatically. Forecast values and its separate city-aggregate historical datasets are not stored as station observations. History starts accumulating after selection.
 
-Existing installations must migrate through `0007` before starting this version (`uv run python -m climate_control.cli migrate`; Compose migrates automatically). The migration clears the previous OpenAQ selection and search results and creates separate AQICN tables. Select an AQICN station again. Legacy OpenAQ history remains separate in the old tables and expires under normal 30-day pruning; overlapping provider station IDs cannot mix indices with concentrations.
+Migration `0007` clears the previous OpenAQ selection and search results and creates separate AQICN tables. When upgrading from OpenAQ, select an AQICN station again. Legacy OpenAQ history remains separate in the old tables and expires under normal 30-day pruning; overlapping provider station IDs cannot mix indices with concentrations.
 
 AQICN and the originating agencies are attributed in the UI. This is a private household app; see [AQICN's data-use terms](https://aqicn.org/api/) before changing how its data is shared or deploying a public or paid service.
 

@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from authlib.integrations.httpx_client import AsyncOAuth2Client
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from pydantic import (
@@ -620,13 +620,29 @@ def current_outdoor_history(request: Request, hours: int = 24):
 
 
 @router.get("/api/devices/{device_id}/history", dependencies=[Depends(authenticated)])
-def device_history(device_id: str, request: Request, hours: int = 24):
+def device_history(
+    device_id: str,
+    request: Request,
+    hours: int = 24,
+    raw: bool = False,
+    after: float | None = Query(default=None, ge=0, allow_inf_nan=False),
+    limit: int = Query(default=1000, ge=1, le=5000),
+):
     if hours not in {24, 168, 720}:
         raise HTTPException(422, "Choose a history period of 24 hours, 7 days, or 30 days.")
     with request.app.state.sessions() as db:
         if db.get(Device, device_id) is None:
             raise HTTPException(404, "Device not found.")
-        return history_view(db, device_id, hours, time.time())
+        return history_view(
+            db,
+            device_id,
+            hours,
+            time.time(),
+            raw=raw,
+            gap_seconds=max(180, request.app.state.settings.poll_interval_seconds * 3),
+            after=after,
+            limit=limit,
+        )
 
 
 @router.post("/api/accounts/{account_id}/refresh", dependencies=[Depends(authenticated)])

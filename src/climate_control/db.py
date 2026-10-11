@@ -72,6 +72,10 @@ class DeviceReading(Base):
     pm1: Mapped[float | None] = mapped_column(nullable=True)
     pm10: Mapped[float | None] = mapped_column(nullable=True)
     air_quality: Mapped[float | None] = mapped_column(nullable=True)
+    power: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    fan_level: Mapped[int | None] = mapped_column(nullable=True)
+    reported_fan_level: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class OutdoorConfiguration(Base):
