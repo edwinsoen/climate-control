@@ -133,7 +133,7 @@ async def test_stale_status_and_restart_persistence(signed_client, app, connecte
 
 async def test_sessions_expire(client, signed_client, app):
     with app.state.sessions() as db:
-        session = db.get(LoginSession, digest(client.cookies["climate_session"]))
+        session = db.get(LoginSession, digest(client.cookies["__session"]))
         session.expires_at = time.time() - 1
         db.commit()
     assert (await client.get("/api/accounts")).status_code == 401

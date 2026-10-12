@@ -1,66 +1,25 @@
-# Climate Control — Product Requirements
+# Product scope
 
-## Purpose
+Climate Control helps a private household monitor air quality and control supported Levoit purifiers. It should make readings, device capabilities, automation decisions, and failures understandable without treating outdoor AQI as an indoor measurement.
 
-Improve home air quality and comfort by controlling connected climate devices with clear, adaptable rules. The first release controls supported Levoit air purifiers through the Python `pyvesync` library. The system is a container with a web UI and runs locally or on Google Cloud Run.
+## Shipped
 
-## Current implementation
+- Connect VeSync accounts, discover purifiers, and control supported power and fan settings. Show fresh, stale, unavailable, and failed states without inventing measurements.
+- Record up to 30 days of paired purifier readings and observed settings. Optionally select an AQICN station and collect outdoor AQI and pollutant indices; station history begins when selected.
+- Edit per-device rules for schedules, readings, missing inputs, and actions. The deterministic worker evaluates rules independently of browser traffic. Manual controls pause automation; capability checks, pacing, persistence, and cooldowns guard changes.
+- Choose manual or agent ownership. An authenticated planning worker can inspect context and propose versioned rules; the app validates proposals and retains the last valid ruleset when planning fails. No model is invoked by the app.
+- Run locally with SQLite and a combined service, or deploy the UI to Firebase Hosting and the API and minute worker to Cloud Run using an external PostgreSQL database.
 
-The app supports VeSync account connections, purifier controls, paired indoor air-quality/setting history, optional AQICN outdoor monitoring, and deterministic per-device automation. A form editor and versioned JSON rules support time windows, indoor/outdoor/other-device conditions, missing-data branches, and power/fan actions. Devices have one manual or agent owner; the durable planning interface accepts validated proposals but does not invoke a model. See [device automation](AUTOMATION.md). Users select a shared household outdoor station through city/station search. Outdoor history accumulates from new observations without automatic backfill. Browser location has an unresolved local Chrome timeout documented in [the service foundation](FOUNDATION.md#browser-location). Weather data and hosted AI planning remain planned.
+## Planned
 
-## Target first release
+Hosted model invocation and cost controls, weather and trend inputs, additional device and environmental providers, and richer household preferences. There is no promise of support for every purifier model, closed-loop control without an indoor sensor, or medical-grade guidance.
 
-The user connects a VeSync account, selects purifiers, sets a home location and preferences, and enables automation. The app reads device state and available indoor measurements, fetches nearby outdoor air quality and weather data, then chooses appropriate purifier settings. Users can see why a setting was chosen and take manual control at any time.
+## Product requirements
 
-Outdoor readings provide context; they must not be treated as measurements inside the home. Device features vary by model, so the app discovers supported controls and readings instead of assuming every purifier has a sensor or every fan mode.
+1. Users can connect an account, inspect supported devices and available readings, choose an optional outdoor station, and see the source and age of every reading.
+2. Users can preview, save, enable, pause, and resume rules. Decisions explain their matched rule, inputs, and outcome; manual controls remain available.
+3. Device commands respect supported capabilities and provider limits. Failed or uncertain reads preserve the last valid observed state; missing data follows explicit rule branches or a hold fallback.
+4. Credentials, sessions, and household data remain private. Provider secrets stay on the backend, and scheduled control continues without an open browser.
+5. Planning proposals pass strict schema and revision checks before activation. Invalid or obsolete proposals leave existing rules active.
 
-## Requirements
-
-### Setup and web UI
-
-- Connect and validate a VeSync account; discover supported Levoit purifiers and show unsupported devices clearly.
-- Configure home location, time zone, selected devices, quiet hours, preferred noise/cleaning balance, and per-device automation state.
-- Show current device state, available sensor readings, outdoor data with source and age, active rules, recent actions with reasons, and connection errors.
-- Allow a manual device setting or automation pause. A manual change suspends automation for that device until a visible, configurable expiry or explicit resume.
-- Protect the UI and API with authentication. Keep VeSync and data-provider credentials out of logs and UI responses.
-
-### Data and control
-
-- Poll device state and external data on configurable intervals, respecting provider limits. Use timestamps and freshness limits; mark stale or unavailable data visibly.
-- Support power, mode, and fan speed only where the model exposes them. Confirm commands against subsequent device state and retry transient failures with bounded backoff.
-- Express setting bounds and quiet-hour behavior in the active ruleset. Enforce capabilities, minimum time between changes, and persistence across distinct readings to prevent rapid switching. There is no separate user-owned setting-limit layer in the current engine.
-- Use indoor measurements, when available, as the primary feedback for indoor air cleaning. Use outdoor air quality, weather, and trends to adjust targets and anticipate changes; never infer an indoor reading from outdoor data.
-- When data, AI, or a device connection fails, retain the last valid safe rule set where possible. Avoid speculative changes, surface the fault, and resume when inputs recover.
-
-### Rules and AI
-
-- Run a deterministic control loop that evaluates the active rules and issues device commands. Every action records its inputs, rule, and reason.
-- Periodically ask a configurable AI provider to propose a rule set and the input-change thresholds that should trigger early reconsideration. Also reconsider when a threshold is crossed or the user changes preferences.
-- Give AI only the data needed to plan. It proposes schedules, settings, and thresholds through the ruleset interface; the interpreter owns command execution and enforces capabilities and provider pacing. Manual editing of agent rules requires explicit ownership takeover.
-- Validate proposed rules against a strict schema and safety bounds before activation. Reject invalid or contradictory proposals and keep the previous rules. Store rule versions and the reason for each update.
-- Preserve the last valid ruleset when AI is unavailable. Without rules, leave the device unchanged; do not invent pollution thresholds or settings. Model invocation and its cost controls remain planned.
-
-## Deployment and data
-
-- Ship one container image with documented local and Cloud Run setup. Configuration and secrets come from environment variables or a secret store; user settings and rule history persist across restarts.
-- Use a local persistent volume for local deployment and an external persistent store on Cloud Run. Do not depend on the container filesystem for durable state.
-- Schedule control ticks independently of UI traffic. Local deployment may use an in-process scheduler; Cloud Run uses an external scheduler calling an authenticated endpoint. Make ticks idempotent so retries or overlapping instances do not duplicate commands.
-- Log decisions and failures without credentials or precise location. Provide a health endpoint and basic operational metrics.
-
-## Acceptance criteria
-
-1. A user can connect VeSync, select a supported purifier, set a location and preferences, and enable automation through the UI.
-2. The app shows the data and active rule behind each setting change; stale or missing data is identifiable.
-3. Automation respects model capabilities, user limits, quiet hours, cooldowns, and manual overrides.
-4. AI can replace a valid rule set on a schedule or significant input change; invalid output or provider failure leaves deterministic control working.
-5. The same image runs locally and on Cloud Run, with settings surviving restart and scheduled control continuing without UI visits.
-
-## Later scope
-
-Add other climate devices and ecosystems through device adapters, plus additional sensor and environmental-data providers. The first release does not promise support for every Levoit model, closed-loop control without an indoor sensor, or medical-grade air quality guidance.
-
-## References
-
-- [pyvesync supported devices and API](https://github.com/webdjoe/pyvesync)
-- [AQICN / WAQI API and data-use terms](https://aqicn.org/api/)
-- [Cloud Run service runtime and persistence](https://docs.cloud.google.com/run/docs/developing), [instance scaling](https://docs.cloud.google.com/run/docs/about-instance-autoscaling)
+See [automation](AUTOMATION.md) for the rule and planning contract, [service behavior](FOUNDATION.md) for data handling, and [deployment](DEPLOYMENT.md) for setup.

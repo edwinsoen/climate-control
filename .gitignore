@@ -43,3 +43,14 @@ frontend/*.tsbuildinfo
 *.egg-info/
 dist/
 .DS_Store
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+!*.example.tfvars.json
+.firebase/
+firebase-debug.log
+.deploy.lock

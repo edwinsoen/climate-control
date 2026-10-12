@@ -13,3 +13,7 @@ frontend/playwright-report
 .ruff_cache
 **/*.pyc
 **/*.tsbuildinfo
+infra
+.firebase
+**/*.tfstate*
+**/*.tfvars*

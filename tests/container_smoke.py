@@ -21,11 +21,30 @@ environment = {
     "SCHEDULER_ENABLED": "true",
     "AQICN_API_TOKEN": "",
 }
+api_only = os.environ.get("SMOKE_API_ONLY") == "true"
 browser = requests.Session()
+
+# Neither migrations nor worker ticks need web login configuration.
+worker_environment = {
+    **environment,
+    "ADMIN_PASSWORD_HASH": "",
+    "GOOGLE_CLIENT_ID": "",
+    "GOOGLE_CLIENT_SECRET": "",
+    "GOOGLE_ALLOWED_EMAILS": "",
+}
+subprocess.run(
+    ["python", "-m", "climate_control.cli", "migrate"],
+    env={**worker_environment, "ENCRYPTION_KEY": ""},
+    check=True,
+)
+subprocess.run(["python", "-m", "climate_control.cli", "tick"], env=worker_environment, check=True)
 
 
 def start():
-    process = subprocess.Popen(["python", "-m", "climate_control.cli", "serve"], env=environment)
+    process = subprocess.Popen(
+        ["python", "-m", "climate_control.cli", "serve-api" if api_only else "serve"],
+        env=environment,
+    )
     for _ in range(80):
         if process.poll() is not None:
             raise RuntimeError("Container service exited during startup")
@@ -47,10 +66,14 @@ def stop(process):
 server = start()
 try:
     page = browser.get("http://127.0.0.1:8080/", timeout=5)
-    assert page.status_code == 200
-    asset = re.search(r'src="(/assets/[^\"]+)"', page.text)
-    assert asset is not None
-    assert browser.get("http://127.0.0.1:8080" + asset.group(1), timeout=5).status_code == 200
+    if api_only:
+        assert page.status_code == 404
+        assert browser.post("http://127.0.0.1:8080/internal/poll", timeout=5).status_code == 404
+    else:
+        assert page.status_code == 200
+        asset = re.search(r'src="(/assets/[^\"]+)"', page.text)
+        assert asset is not None
+        assert browser.get("http://127.0.0.1:8080" + asset.group(1), timeout=5).status_code == 200
     assert browser.get("http://127.0.0.1:8080/api/devices", timeout=5).status_code == 401
     login = browser.post(
         "http://127.0.0.1:8080/api/login",
@@ -69,4 +92,4 @@ try:
     )
 finally:
     stop(server)
-print("Container smoke test passed: non-root runtime, migrations, UI, authentication, and restart.")
+print("Container smoke test passed: migrations, worker tick, web mode, login, and restart.")

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, select, update
 
-from climate_control.config import Settings
+from climate_control.config import WorkerSettings
 from climate_control.db import Account, Automation, Device
 from climate_control.history import prune_readings, record_reading
 from climate_control.providers.base import DeviceCommand, DeviceProvider, PollResult, ProviderError
@@ -29,7 +29,12 @@ class RefreshResult:
 
 class Poller:
     def __init__(
-        self, sessions, settings: Settings, vault: Vault, provider: DeviceProvider, outdoor=None
+        self,
+        sessions,
+        settings: WorkerSettings,
+        vault: Vault,
+        provider: DeviceProvider,
+        outdoor=None,
     ):
         self.sessions = sessions
         self.settings = settings
@@ -284,6 +289,12 @@ class Poller:
     async def tick(self) -> dict:
         with self.sessions() as db:
             current = time.time()
+            from climate_control.db import LoginSession, LoginThrottle, OAuthFlow
+
+            for model in (LoginSession, LoginThrottle, OAuthFlow):
+                db.execute(delete(model).where(model.expires_at <= current))
+            prune_readings(db, current)
+            db.commit()
             ids = list(
                 db.scalars(
                     select(Account.id).where(
@@ -310,13 +321,6 @@ class Poller:
         while True:
             try:
                 await self.tick()
-                with self.sessions() as db:
-                    current = time.time()
-                    from climate_control.db import LoginSession, LoginThrottle, OAuthFlow
-
-                    for model in (LoginSession, LoginThrottle, OAuthFlow):
-                        db.execute(delete(model).where(model.expires_at <= current))
-                    db.commit()
             except asyncio.CancelledError:
                 raise
             except Exception:

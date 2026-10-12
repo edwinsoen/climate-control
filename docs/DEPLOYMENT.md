@@ -2,124 +2,94 @@
 
 ## Local container
 
-Use the [README setup](../README.md) and `docker compose up --build -d`. The app listens only on `127.0.0.1:8080` by default and stores its SQLite database in `climate-data`. To expose it on a home network, place it behind an HTTPS reverse proxy, change `APP_URL`, and update the port binding. The proxy must preserve the original Origin header; the service does not trust forwarded client headers.
+Follow the [README](../README.md#run-locally), then run `docker compose up --build -d`. Compose runs migrations and the local scheduler, binds to `127.0.0.1:8080`, and persists SQLite in the `climate-data` volume. Run one application container with SQLite. For home-network access, use an HTTPS reverse proxy, update `APP_URL` and the port binding, and preserve the original `Origin` header.
 
-Compose runs migrations before starting the service and enables the local scheduler. Run one application container with SQLite. PostgreSQL is required for multiple instances.
+## GCP setup
 
-## Cloud Run
-
-Use PostgreSQL for durable state and Cloud Scheduler for polling. Keep `SCHEDULER_ENABLED=false` and `AUTO_MIGRATE=false` on the service. Cloud Run may scale to zero between scheduler requests; no background worker is required.
-
-The commands below are deployment templates. Replace placeholder project, region, image, database, and secret values. Provisioning these resources incurs normal GCP charges.
-
-### Resources and image
-
-```sh
-PROJECT=your-project
-REGION=asia-southeast1
-SERVICE=climate-control
-INSTANCE=climate-db
-IMAGE="$REGION-docker.pkg.dev/$PROJECT/climate/app:v0.1.0"
-RUNTIME_SA="climate-runtime@$PROJECT.iam.gserviceaccount.com"
-SCHEDULER_SA="climate-scheduler@$PROJECT.iam.gserviceaccount.com"
-
-gcloud config set project "$PROJECT"
-gcloud services enable run.googleapis.com cloudscheduler.googleapis.com \
-  sqladmin.googleapis.com secretmanager.googleapis.com \
-  artifactregistry.googleapis.com cloudbuild.googleapis.com
-gcloud artifacts repositories create climate --repository-format=docker --location="$REGION"
-gcloud builds submit --tag "$IMAGE" .
-
-gcloud iam service-accounts create climate-runtime
-gcloud iam service-accounts create climate-scheduler
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:$RUNTIME_SA" --role=roles/cloudsql.client
-```
-
-Create a PostgreSQL database and user, either in an existing instance or a new Cloud SQL instance:
-
-```sh
-gcloud sql instances create "$INSTANCE" --database-version=POSTGRES_16 \
-  --tier=db-f1-micro --region="$REGION"
-gcloud sql databases create climate --instance="$INSTANCE"
-```
-
-Create a built-in database user named `climate` and set its password in the Cloud SQL console. [User configuration reference](https://docs.cloud.google.com/sql/docs/postgres/create-manage-users)
-
-Create Secret Manager secrets for `climate-encryption-key`, `climate-database-url`, `climate-google-client-id`, and `climate-google-client-secret`. Use the console or `gcloud secrets create NAME --data-file=FILE`; keep temporary secret files outside the repository. Grant the runtime service account `roles/secretmanager.secretAccessor` on these secrets.
-
-The database URL for Cloud SQL's Unix socket is:
+Firebase Hosting serves the UI and rewrites `/api`, `/auth`, and `/health` to a Cloud Run API. Cloud Scheduler starts a separate `tick` Cloud Run Job every minute for collection, automation, and cleanup. A migration Job updates the schema before each new API image is activated. All three runtimes share an **external PostgreSQL database**; Terraform does not provision a database or private network. Cloud Run must reach the database over public TLS egress. For example:
 
 ```text
-postgresql+psycopg://climate:URL_ENCODED_PASSWORD@/climate?host=/cloudsql/PROJECT:REGION:INSTANCE
+postgresql+psycopg://USER:URL_ENCODED_PASSWORD@DB_HOST:5432/DATABASE?sslmode=require&connect_timeout=10
 ```
 
-Generate the encryption key with `python -m climate_control.cli key`. Use a web Google OAuth client for sign-in and configure its consent screen. Set allowed household emails explicitly.
+Use `sslmode=verify-full` if supported by your database certificate setup.
 
-### Migrate, then deploy
+### Bootstrap once
 
-Create a migration job using the same image, database, and encryption key. Its administrator hash is unused; provide Google configuration so settings validation matches production.
+Prerequisites: a billed GCP project, Terraform 1.7+, Google Cloud CLI, Docker, Node 24, Firebase CLI, and uv/Invoke. Sign in with `gcloud auth login`, `gcloud auth application-default login`, and `firebase login`; accept Firebase terms. The provisioning identity needs project resource, service-account impersonation, Artifact Registry write, Secret Manager version listing, Cloud Run deployment/job execution, and Hosting release permissions. Project policy must permit public Cloud Run invocation, which the app protects with authentication. The billing plan must support Firebase Hosting's Cloud Run integration.
 
 ```sh
-SECRETS="ENCRYPTION_KEY=climate-encryption-key:1,DATABASE_URL=climate-database-url:1,GOOGLE_CLIENT_ID=climate-google-client-id:1,GOOGLE_CLIENT_SECRET=climate-google-client-secret:1"
-
-gcloud run jobs create climate-migrate --image="$IMAGE" --region="$REGION" \
-  --service-account="$RUNTIME_SA" --set-cloudsql-instances="$PROJECT:$REGION:$INSTANCE" \
-  --set-secrets="$SECRETS" \
-  --set-env-vars="GOOGLE_ALLOWED_EMAILS=owner@example.com" \
-  --command=python --args=-m,climate_control.cli,migrate \
-  --tasks=1 --max-retries=0
-gcloud run jobs execute climate-migrate --region="$REGION" --wait
-
-gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" \
-  --service-account="$RUNTIME_SA" --add-cloudsql-instances="$PROJECT:$REGION:$INSTANCE" \
-  --set-secrets="$SECRETS" \
-  --set-env-vars="APP_URL=https://YOUR_SERVICE_URL,GOOGLE_ALLOWED_EMAILS=owner@example.com,SCHEDULER_ENABLED=false,SCHEDULER_SERVICE_ACCOUNT=$SCHEDULER_SA,SCHEDULER_AUDIENCE=https://YOUR_SERVICE_URL/internal/poll,AUTO_MIGRATE=false" \
-  --no-invoker-iam-check --min-instances=0 --max-instances=2 \
-  --concurrency=20 --timeout=1800 --memory=512Mi --cpu=1
+cp infra/gcp/bootstrap/terraform.example.tfvars infra/gcp/bootstrap/terraform.tfvars
+# Set project_id, and optionally region and globally unique site_id.
+terraform -chdir=infra/gcp/bootstrap init
+terraform -chdir=infra/gcp/bootstrap plan
+terraform -chdir=infra/gcp/bootstrap apply
 ```
 
-For the first deployment, supply a temporary HTTPS placeholder for `APP_URL` and `SCHEDULER_AUDIENCE`, obtain the service URL from the deployment output, then update both values before using the app. Register that exact URL plus `/auth/google/callback` in the Google OAuth client. A custom domain can be supplied directly if already configured.
-
-The service allows requests to reach the login page; application authentication protects accounts and devices. Disabling the Cloud Run invoker IAM check lets the app verify the scheduler's complete OIDC token itself. Keep the scheduler audience equal to the full `/internal/poll` URL in both configurations. [Cloud Run public access configuration](https://docs.cloud.google.com/run/docs/authenticating/public)
-
-### Schedule polling
+Bootstrap enables APIs and creates the registry, four service accounts, six empty Secret Manager containers, and the Firebase site. Existing Firebase project/site resources must be imported before apply:
 
 ```sh
-SERVICE_URL=https://YOUR_SERVICE_URL
-gcloud scheduler jobs create http climate-poll --location="$REGION" \
-  --schedule='* * * * *' --uri="$SERVICE_URL/internal/poll" --http-method=POST \
-  --oidc-service-account-email="$SCHEDULER_SA" \
-  --oidc-token-audience="$SERVICE_URL/internal/poll" \
-  --attempt-deadline=1800s --max-retry-attempts=2
+terraform -chdir=infra/gcp/bootstrap import google_firebase_project.app projects/YOUR_PROJECT
+terraform -chdir=infra/gcp/bootstrap import google_firebase_hosting_site.app projects/YOUR_PROJECT/sites/YOUR_SITE
 ```
 
-The person creating the job needs permission to act as the scheduler service account. Keep the Cloud Scheduler service agent's `roles/cloudscheduler.serviceAgent` role so it can mint tokens. The application validates token signature, issuer, audience, expiry, verified email, and the exact configured scheduler identity. [Scheduler authentication documentation](https://docs.cloud.google.com/scheduler/docs/http-target-auth)
+Secret containers have `prevent_destroy`. Keep Terraform state access controlled; use a remote backend for shared operation. Terraform state and local input files are ignored by Git.
 
-### Check operation and updates
+### Populate secrets once
 
-Check `/health/ready`, sign in, connect a VeSync account, and compare its device state with the VeSync app. Confirm the retrieval time advances after a scheduler execution, with no browser open. Check account errors and scheduler execution logs for failures.
+Find container IDs in the bootstrap `platform.secret_ids` output. Add versions with the console or a file outside this repository:
 
-For updates, build a new image tag, update and execute the migration job, then deploy the service with that image. Back up the database and retain the encryption key. Restore both together. Avoid running incompatible schema migrations alongside old revisions; follow the applicable upgrade notes below.
+```sh
+gcloud secrets versions add SECRET_ID --project YOUR_PROJECT --data-file /outside/repo/secret-file
+```
 
-Persistent leases protect account refreshes during retries and revision overlap. Each account poll times out after four minutes; a request can process three accounts at once. The 30-minute request deadline accommodates ordinary household deployments.
+Required: `DATABASE_URL`, `ENCRYPTION_KEY`, and either `ADMIN_PASSWORD_HASH` or both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. `AQICN_API_TOKEN` is optional. Leave unused containers empty. Generate the key and hash with `uv run python -m climate_control.cli key` and `uv run python -m climate_control.cli hash-password`. The key must be Fernet base64 text, not hex. Retain it with database backups. Surrounding whitespace in deployment secret text is trimmed, including a final newline; whitespace inside credentials is preserved.
 
-## Optional outdoor monitoring
+### Deploy or update
 
-Configure `AQICN_API_TOKEN` using the [README instructions](../README.md#outdoor-air-quality). On Cloud Run, keep the token in Secret Manager and bind `AQICN_API_TOKEN=YOUR_SECRET:VERSION`. Local Compose reads it from `.env`. A token from OpenAQ is incompatible. The backend needs outbound HTTPS access to `api.waqi.info`; AQICN uses the token in its query string, so request URL logging is disabled. Users search for their city/station inside the app; no location environment variable or geocoding service is used.
+Run from the repository root:
 
-Migration `0007` clears old OpenAQ selection/search state, retains legacy records separately, and creates AQICN tables. Stop the old backend before migration locally. Re-select a station in the app when upgrading from OpenAQ. The local scheduler or `/internal/poll` Cloud Scheduler job records fetched AQI observations even with no devices connected. Current fetches default to five minutes (`OUTDOOR_POLL_INTERVAL_SECONDS`); measurement staleness defaults to three hours (`OUTDOOR_STALE_AFTER_SECONDS`). No automatic backfill runs, because the public station-feed API has no documented history endpoint.
+```sh
+invoke deploy
+```
 
-Check station name, overall AQI and pollutant indices, agency attribution, inline measurement ages, and errors after a scheduler execution. `/api/outdoor` also exposes the last successful retrieval timestamp. `/health/ready` verifies migration readiness. Scheduler JSON includes `outdoor_checked`; fixed log outcomes exclude tokens and locations. Selection and recorded history persist across restarts. Changing the token requires a service restart/deployment; changing or removing the selected station is immediate. Invalid-token errors pause polling until credentials or station selection change. AQICN use remains within this app's private household scope; consult its published data-use terms before any public/paid deployment or data redistribution.
+`uv run invoke deploy` works without a global Invoke installation. Use `invoke deploy --dry-run` to inspect the target and selected secret versions without building or publishing. The task updates bootstrap, selects the newest enabled version of each populated secret from metadata, and pins numeric versions without downloading payloads. It builds the UI and a backend-only `linux/amd64` image, pushes an immutable digest, pauses the schedule and drains existing jobs, updates jobs, runs migrations, activates and checks the API, publishes Hosting with `LICENSE`, checks the Hosting origin, then resumes the schedule. On a failed release after the pause, the schedule stays paused and the ignored input files are ready for a retry; fix the error and rerun the same command. A local lock prevents concurrent deploys from one checkout.
 
-Browser location requires HTTPS in deployed environments; localhost is supported for development. City/station search remains available when browser positioning fails. The unresolved local Chrome issue is recorded in [browser location behavior](FOUNDATION.md#browser-location).
+The deploy task applies Terraform automatically. Generated `platform.auto.tfvars.json` and `deployment.auto.tfvars.json` hold non-secret inputs. `APP_URL` defaults to `https://SITE_ID.web.app`; use the runtime Terraform `app_url` variable only for an already connected custom Hosting origin. If Google login is enabled, the allowlist comes from `--allowed-emails`, `GOOGLE_ALLOWED_EMAILS`, the saved Terraform value, or `.env`, in that order. The first interactive run prompts if none exists; noninteractive runs must provide one. The CLI's current Google account is never added implicitly.
 
-## Purifier setting history upgrade (0008)
+The API has one CPU, 512 MiB, concurrency 20, and at most two instances by default. Jobs run one task, allow no automatic retries, and time out after 30 minutes. Scheduler uses OAuth to invoke only the worker Job. Keep the Cloud Scheduler service-agent role so it can mint tokens. [Scheduled job authentication](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule).
 
-Migration `0008` adds nullable power, mode, selected fan level, and reported running fan level columns to `device_readings`. It preserves existing air-quality readings; their past settings remain unknown. Apply migrations through `0008` before running the updated backend.
+## Authentication and operations
 
-For a local source installation, back up SQLite and keep the encryption key, stop the backend, run `uv run python -m climate_control.cli migrate`, and restart it with `uv run python -m climate_control.cli serve`. Preserve the existing configuration, including `APP_URL=http://localhost:5173` when using Vite. Backend code changes do not reload automatically. Rebuild `frontend/dist` with `npm run build` from `frontend/` when serving the compiled UI. Compose handles the migration and rebuild with `docker compose up --build -d`; on Cloud Run, execute the migration job before deploying the updated service image.
+Register the exact `APP_URL` as an authorized JavaScript origin in the Google OAuth web client, and `APP_URL/auth/google/callback` as an authorized redirect URI. For the Firebase site `es-climate-control`, these are `https://es-climate-control.web.app` and `https://es-climate-control.web.app/auth/google/callback`; login begins at `/auth/google/login`. Use the same canonical host for UI and API sessions. Firebase forwards the `__session` cookie; CSRF checks, PKCE, nonce, and replay protection remain active. Sessions using older cookie names must sign in again. [Firebase cookie forwarding](https://firebase.google.com/docs/hosting/manage-cache).
 
-Migration `0009` adds device automation and planning inboxes; existing devices remain disabled until configured. Each scheduled tick evaluates enabled rules after collection, including on Cloud Run. The scheduler's cadence determines schedule precision. Keep the scheduler running even when no browser is open. Agent-managed mode requires a separate authenticated planning worker; this release only queues durable reconsideration requests and accepts validated proposals. See [automation operations and the agent protocol](AUTOMATION.md).
+Firebase has a 60-second proxy limit, so deployed interactive provider operations have a 50-second budget, including command queue waits. A timeout returns a sanitized 504 and preserves cached state; an uncertain command may have reached the device, so inspect observed status before retrying. The worker has longer budgets. [Hosting request timeout](https://firebase.google.com/docs/hosting/cloud-run).
 
-Check `/health/ready` and allow successful scheduled polls or valid status/control readbacks to collect new observations. Expand a purifier's **History** section and look for the Settings legend, mode/power bands, and the dashed fan-speed line on the right-hand Fan axis. The first observation appears as a small marker at the right edge of the chart; the overlay grows as history accumulates. Existing PM2.5 history alone cannot produce an overlay. The history API's `settings` array and `raw=true` paired observations use cached database data and add no provider requests. History retains 30 days of observations and provides paired inputs for rule planning. Model invocation remains planned.
+Check `/health/ready`, sign-in, account connection, and controls at the Hosting URL. To check one worker execution:
+
+```sh
+gcloud run jobs execute climate-control-worker --project YOUR_PROJECT --region asia-southeast1 --wait
+```
+
+Use your configured region if different. Tick results include `checked`, `refreshed`, `outdoor_checked`, and `automation_checked`. Scheduler success confirms launch; inspect Cloud Run execution completion and logs for failures. Cached retrieval times should advance with no browser open. If migration execution fails, inspect that Job's logs, database reachability, and Secret Manager versions; rerun `invoke deploy` after correcting the issue.
+
+Back up PostgreSQL and retain the encryption key before upgrades. The old API remains available during migration, so schema changes must be compatible with it until replacement; take it offline for an incompatible migration. Image and UI rollback also requires schema compatibility. A Hosting rollback alone does not roll back API or worker code.
+
+When moving from the old combined Cloud Run service, pause its scheduler and drain pending requests before enabling the new one. Reuse its database URI and encryption key, register the Firebase callback, validate the new deployment, then stop the old service. Legacy `/internal/poll` exists only in local combined mode when explicitly configured.
+
+To validate Terraform locally:
+
+```sh
+terraform fmt -check -recursive infra/gcp
+terraform -chdir=infra/gcp/bootstrap validate
+terraform -chdir=infra/gcp/runtime validate
+terraform -chdir=infra/gcp/runtime test
+```
+
+## Upgrade notes
+
+- `0007` replaces OpenAQ selection with AQICN. Re-select a station; legacy history remains separate and expires under normal retention. Set `AQICN_API_TOKEN` in Secret Manager, then redeploy. The selected station collects every five minutes by default, without historical backfill.
+- `0008` adds observed purifier settings to history. Existing air-quality readings remain, but past settings are unknown; new settings appear after valid polls or readbacks.
+- `0009` adds automation and planning records. Existing and new devices start with automation disabled; agent mode requires an external authenticated planning worker. See [automation](AUTOMATION.md).
+
+Local source upgrades require stopping the backend, backing up SQLite and its encryption key, running `uv run python -m climate_control.cli migrate`, then restarting. Compose handles migration on startup; GCP `invoke deploy` runs the migration Job before switching the API. The backend does not reload automatically.

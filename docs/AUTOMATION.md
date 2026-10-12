@@ -1,39 +1,14 @@
 # Device automation
 
-The deterministic engine runs after collection on every local scheduler or
-authenticated `/internal/poll` tick. It evaluates cached data and dispatches
-through the poller's account leases, spacing, backoff, and immediate readback.
-It does not invoke an AI model. An external planning worker uses the authenticated
-agent interface below.
-
-Migration `0009` adds disabled automation records for existing devices, immutable
-ruleset revisions, interpreter state, events, and durable planning inboxes. Apply
-migrations before starting the updated service. New devices also start disabled.
+The deterministic engine runs after collection in each local scheduler cycle or GCP minute `tick`. It evaluates cached observations and uses the poller's account leases, pacing, backoff, and immediate readback. It does not invoke a model; an external planning worker may use the authenticated API below. Migration `0009` creates disabled automation for existing devices, versioned rules, events, and durable planning jobs. New devices also start disabled.
 
 ## User controls and ownership
 
-Select **Edit rules** on a device to open its dedicated rules page. Add named,
-ordered rules using **When**, **If**, and **Then** for schedules, readings, and
-device settings. Rule and review-condition IDs are generated automatically and
-kept out of the form. Arrow icons beside the rule name change priority; the trash
-icon removes a rule. Select the schedule/conditions/setting summary to expand or
-collapse a rule.
-**Preview rules** validates the draft and explains the current match without provider
-requests. Save a valid ruleset, then **Enable rules**; saving alone does not enable
-a disabled device. The page protects unsaved edits when leaving and preserves
-drafts during background status refreshes. Timing, agent review conditions, and
-JSON import/export are available in expandable sections.
+**Edit rules** opens a per-device editor for ordered **When**, **If**, and **Then** rules. **Preview rules** validates and explains a draft without provider requests; saving does not enable a disabled device. Timing, review conditions, and JSON import/export are available in the editor.
 
-Each device has one owner: **Manual** or **Agent-managed**. Agent rules are read-only
-until **Switch to manual** is selected under **Management**. Switching to agent management retains
-the existing rules and queues planning. Without existing rules, settings are held
-until a valid proposal arrives. Ownership changes invalidate outstanding proposals.
+Each device has one owner: **Manual** or **Agent-managed**. Agent rules become editable after switching to manual ownership. Switching to agent ownership keeps existing rules and queues planning; without rules, the device holds its setting until a valid proposal arrives. Ownership changes invalidate outstanding proposals.
 
-Direct app power/fan controls pause enabled automation for one hour by default.
-Choose another duration in the editor, or select **Pause** / **Resume**. The
-pause persists before dispatch and remains even if the manual command fails.
-Changes outside this app cannot reliably be distinguished from provider state
-reconciliation and do not automatically pause automation.
+Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration or pause/resume explicitly. Changes made outside the app do not automatically pause rules.
 
 ## Rule format, version 1
 
@@ -65,12 +40,7 @@ Limits: 64 rules, 12 conditions and 14 time windows per rule, 32 review triggers
   Rules own quiet-hour and allowed-setting policy; there is no separate limit
   layer. Model capabilities and provider pacing are always enforced.
 
-To retain a fan setting between two thresholds, use separate rules and a hold
-fallback. For example, set fan 4 at PM2.5 **at least 30**, set fan 2 **below 20**,
-and choose **Keep current setting** when no rule matches. At 29, the device keeps
-its existing setting; after reaching fan 4, it stays there until a below-20
-transition passes the configured reading persistence and timing checks. The lower
-bound includes 30; the upper bound excludes 20.
+For hysteresis, place a high-threshold action before a low-threshold action and use a hold fallback. For example, fan 4 at PM2.5 ≥30 and fan 2 below 20 keeps the current setting between thresholds.
 
 An offline, stale, errored, or unsupported target inhibits commands. Missing
 outdoor or other-device data does not inhibit the target: rules determine the
@@ -102,50 +72,25 @@ the current status without creating activity entries.
 
 ## Example for agent authors
 
-This illustrates syntax, not a recommended pollution policy. Replace `DEVICE_ID`,
-thresholds, supported settings, timezone, and timings using actual capabilities,
-household preferences, and observations. Outdoor data remains optional.
+This shows syntax, not a recommended pollution policy. Replace the device ID, threshold, fan setting, and timezone with validated household inputs and capabilities.
 
 ```json
 {
   "version": 1,
   "timezone": "Asia/Singapore",
-  "consecutive_readings": 2,
-  "min_change_seconds": 120,
-  "review_after_seconds": 86400,
-  "reconsideration_cooldown_seconds": 1800,
   "rules": [
     {
-      "id": "quiet-hours",
-      "explanation": "Use Sleep during the household quiet period.",
-      "windows": [{"days": [0, 1, 2, 3, 4, 5, 6], "start": "23:00", "end": "07:00"}],
-      "action": {"power": "on", "fan": "sleep"}
-    },
-    {
-      "id": "outdoor-assisted",
-      "explanation": "Boost when indoor particles and outdoor AQI are elevated.",
+      "id": "particles-high",
+      "explanation": "Increase cleaning when indoor PM2.5 is high.",
       "conditions": [
-        {"source": {"kind": "device", "device_id": "DEVICE_ID", "metric": "pm25"}, "lower": 15},
-        {"source": {"kind": "outdoor", "metric": "aqi"}, "lower": 100}
+        {"source": {"kind": "device", "device_id": "DEVICE_ID", "metric": "pm25"}, "lower": 30}
       ],
       "action": {"power": "on", "fan": 3}
-    },
-    {
-      "id": "indoor-only",
-      "explanation": "Continue cleaning when outdoor data is unavailable.",
-      "conditions": [
-        {"source": {"kind": "device", "device_id": "DEVICE_ID", "metric": "pm25"}, "lower": 15}
-      ],
-      "action": {"power": "on", "fan": 2}
     }
   ],
   "fallback": {"power": "hold"},
   "triggers": [
-    {"id": "outdoor-rise", "kind": "above", "source": {"kind": "outdoor", "metric": "aqi"}, "threshold": 150, "reset": 100},
-    {"id": "outdoor-recovery", "kind": "below", "source": {"kind": "outdoor", "metric": "aqi"}, "threshold": 50, "reset": 75},
-    {"id": "stalled", "kind": "not_improving", "source": {"kind": "device", "device_id": "DEVICE_ID", "metric": "pm25"}, "threshold": 20, "readings": 5, "window_seconds": 1800, "improvement": 3},
-    {"id": "outdoor-availability", "kind": "availability", "source": {"kind": "outdoor", "metric": "aqi"}},
-    {"id": "command-failures", "kind": "failures", "readings": 3}
+    {"id": "particles-rise", "kind": "above", "source": {"kind": "device", "device_id": "DEVICE_ID", "metric": "pm25"}, "threshold": 40, "reset": 25}
   ]
 }
 ```

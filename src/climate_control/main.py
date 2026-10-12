@@ -10,47 +10,42 @@ from sqlalchemy import text
 from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
-from climate_control.api import router
-from climate_control.automation import RuleEngine
+from climate_control.api import legacy_scheduler_router, router
 from climate_control.automation_api import router as automation_router
 from climate_control.config import Settings
-from climate_control.db import database
-from climate_control.outdoor import OutdoorCollector
-from climate_control.polling import Poller
-from climate_control.providers.aqicn import AQICNProvider
-from climate_control.providers.vesync import VeSyncProvider
-from climate_control.security import Vault
+from climate_control.runtime import create_runtime
 
 
-def create_app(settings: Settings | None = None, provider=None, outdoor_provider=None) -> FastAPI:
+def create_api_app(
+    settings: Settings | None = None, provider=None, outdoor_provider=None
+) -> FastAPI:
+    return create_app(settings, provider, outdoor_provider, api_only=True)
+
+
+def create_app(
+    settings: Settings | None = None, provider=None, outdoor_provider=None, *, api_only=False
+) -> FastAPI:
     settings = settings or Settings()
-    engine, sessions = database(settings.database_url)
+    runtime = create_runtime(settings, provider, outdoor_provider, worker=not api_only)
+    engine, sessions = runtime.engine, runtime.sessions
+    vault, outdoor, poller = runtime.vault, runtime.outdoor, runtime.poller
     schema_revision = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
-    vault = Vault(settings.encryption_key)
-    outdoor = OutdoorCollector(
-        sessions,
-        settings,
-        outdoor_provider or AQICNProvider(settings.aqicn_api_token.get_secret_value()),
-    )
-    poller = Poller(
-        sessions,
-        settings,
-        vault,
-        provider or VeSyncProvider(settings.request_spacing_seconds),
-        outdoor=outdoor,
-    )
-
-    poller.automation = RuleEngine(sessions, settings, poller)
 
     @asynccontextmanager
     async def lifespan(app):
-        task = asyncio.create_task(poller.run()) if settings.scheduler_enabled else None
-        yield
-        if task:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        engine.dispose()
+        task = (
+            asyncio.create_task(poller.run())
+            if settings.scheduler_enabled and not api_only
+            else None
+        )
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            engine.dispose()
 
     app = FastAPI(
         title="Climate Control",
@@ -60,6 +55,7 @@ def create_app(settings: Settings | None = None, provider=None, outdoor_provider
         redoc_url=None,
         openapi_url=None,
     )
+    app.state.api_only = api_only
     app.state.settings = settings
     app.state.engine = engine
     app.state.sessions = sessions
@@ -67,6 +63,8 @@ def create_app(settings: Settings | None = None, provider=None, outdoor_provider
     app.state.poller = poller
     app.state.outdoor = outdoor
     app.include_router(router)
+    if not api_only:
+        app.include_router(legacy_scheduler_router)
     app.include_router(automation_router)
 
     @app.exception_handler(RequestValidationError)
@@ -123,6 +121,9 @@ def create_app(settings: Settings | None = None, provider=None, outdoor_provider
         except Exception as exc:
             raise HTTPException(503, "Database unavailable or migrations required.") from exc
         return {"status": "ready"}
+
+    if api_only:
+        return app
 
     static = settings.frontend_dir
     if (static / "assets").is_dir():

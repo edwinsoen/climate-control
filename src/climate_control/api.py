@@ -38,8 +38,20 @@ from climate_control.providers.base import DeviceCommand, ProviderError
 from climate_control.security import create_session, digest, verify_password
 
 router = APIRouter()
-SESSION_COOKIE = "climate_session"
-FLOW_COOKIE = "climate_oauth"
+legacy_scheduler_router = APIRouter()
+SESSION_COOKIE = "__session"
+FLOW_COOKIE = SESSION_COOKIE
+
+
+async def provider_operation(request: Request, operation):
+    timeout = request.app.state.settings.api_operation_timeout_seconds
+    try:
+        async with asyncio.timeout(timeout or None):
+            return await operation
+    except TimeoutError:
+        raise HTTPException(
+            504, "The provider request timed out. Check current status before trying again."
+        ) from None
 
 
 def timestamp(value: float | None) -> str | None:
@@ -171,7 +183,13 @@ async def google_login(request: Request):
     settings = request.app.state.settings
     if not settings.google_enabled:
         raise HTTPException(404, "Google login is not enabled.")
-    browser_token = secrets.token_urlsafe(32)
+    try:
+        authenticated(request)
+        browser_token = request.cookies[SESSION_COOKIE]
+        existing_session = True
+    except HTTPException:
+        browser_token = secrets.token_urlsafe(32)
+        existing_session = False
     nonce = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(48)
     async with AsyncOAuth2Client(
@@ -197,15 +215,16 @@ async def google_login(request: Request):
         )
         db.commit()
     response = RedirectResponse(url, status_code=302)
-    response.set_cookie(
-        FLOW_COOKIE,
-        browser_token,
-        max_age=600,
-        httponly=True,
-        secure=settings.secure_cookies,
-        samesite="lax",
-        path="/",
-    )
+    if not existing_session:
+        response.set_cookie(
+            FLOW_COOKIE,
+            browser_token,
+            max_age=600,
+            httponly=True,
+            secure=settings.secure_cookies,
+            samesite="lax",
+            path="/",
+        )
     return response
 
 
@@ -264,12 +283,14 @@ async def google_callback(request: Request, state: str = "", code: str = ""):
         email = validate_google_identity(claims, flow.payload["nonce"], settings.allowed_emails)
     except Exception:
         response = RedirectResponse("/login?error=google", status_code=303)
-        response.delete_cookie(FLOW_COOKIE, path="/")
+        try:
+            authenticated(request)
+        except HTTPException:
+            response.delete_cookie(FLOW_COOKIE, path="/")
         return response
     with request.app.state.sessions() as db:
         session_token, _ = create_session(db, email, settings.session_ttl_seconds)
     response = RedirectResponse("/", status_code=303)
-    response.delete_cookie(FLOW_COOKIE, path="/")
     set_session(response, request, session_token)
     return response
 
@@ -344,7 +365,7 @@ async def connect_account(payload: AccountInput, request: Request):
             db.rollback()
             raise HTTPException(409, "This account is already connected.") from exc
         account_id = account.id
-    await request.app.state.poller.refresh(account_id)
+    await provider_operation(request, request.app.state.poller.refresh(account_id))
     with request.app.state.sessions() as db:
         saved = db.get(Account, account_id)
         if saved is None:
@@ -388,7 +409,7 @@ async def reconnect_account(account_id: str, payload: AccountInput, request: Req
             db.rollback()
             raise HTTPException(409, "A refresh is running. Try again when it finishes.")
         db.commit()
-    await request.app.state.poller.refresh(account_id)
+    await provider_operation(request, request.app.state.poller.refresh(account_id))
     with request.app.state.sessions() as db:
         saved = db.get(Account, account_id)
         if saved is None:
@@ -499,8 +520,9 @@ async def control_device(device_id: str, payload: ControlInput, request: Request
 
         pause_for_manual(db, device_id)
         db.commit()
-    result = await request.app.state.poller.queued_control(
-        device_id, DeviceCommand(**payload.model_dump())
+    result = await provider_operation(
+        request,
+        request.app.state.poller.queued_control(device_id, DeviceCommand(**payload.model_dump())),
     )
     return control_response(device_id, result, request)
 
@@ -514,7 +536,7 @@ async def retrieve_device_status(device_id: str, request: Request):
         account = db.get(Account, device.account_id)
         if not device.supported or account.provider != "vesync":
             raise HTTPException(422, "This device does not support status retrieval.")
-    result = await request.app.state.poller.control(device_id, None)
+    result = await provider_operation(request, request.app.state.poller.control(device_id, None))
     return control_response(device_id, result, request)
 
 
@@ -578,7 +600,7 @@ class OutdoorSearchInput(BaseModel):
 @router.post("/api/outdoor/stations/search", dependencies=[Depends(authenticated)])
 async def search_outdoor_stations(body: OutdoorSearchInput, request: Request):
     try:
-        stations = await request.app.state.outdoor.search(body.query)
+        stations = await provider_operation(request, request.app.state.outdoor.search(body.query))
     except OutdoorBusy as exc:
         raise HTTPException(
             429,
@@ -593,7 +615,9 @@ async def search_outdoor_stations(body: OutdoorSearchInput, request: Request):
 @router.post("/api/outdoor/stations/nearby", dependencies=[Depends(authenticated)])
 async def nearby_outdoor_stations(body: OutdoorCoordinates, request: Request):
     try:
-        stations = await request.app.state.outdoor.nearby(body.latitude, body.longitude)
+        stations = await provider_operation(
+            request, request.app.state.outdoor.nearby(body.latitude, body.longitude)
+        )
     except OutdoorBusy as exc:
         raise HTTPException(
             429,
@@ -615,7 +639,8 @@ def save_outdoor_location(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         result = outdoor_view(db, request.app.state.settings)
-    background_tasks.add_task(request.app.state.outdoor.tick)
+    if not request.app.state.api_only:
+        background_tasks.add_task(request.app.state.outdoor.tick)
     return result
 
 
@@ -668,7 +693,7 @@ def device_history(
 
 @router.post("/api/accounts/{account_id}/refresh", dependencies=[Depends(authenticated)])
 async def refresh_account(account_id: str, request: Request):
-    result = await request.app.state.poller.refresh(account_id)
+    result = await provider_operation(request, request.app.state.poller.refresh(account_id))
     if result.status == "missing":
         raise HTTPException(404, "Account not found.")
     if result.status == "auth_error":
@@ -691,7 +716,7 @@ def scheduler_identity(claims: dict, expected_email: str):
         raise ValueError("Invalid scheduler identity")
 
 
-@router.post("/internal/poll")
+@legacy_scheduler_router.post("/internal/poll")
 async def scheduler_poll(request: Request):
     settings = request.app.state.settings
     if not settings.scheduler_service_account or not settings.scheduler_audience:
