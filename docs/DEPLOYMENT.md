@@ -57,7 +57,7 @@ invoke deploy
 
 The deploy task applies Terraform automatically. Generated `platform.auto.tfvars.json` and `deployment.auto.tfvars.json` hold non-secret inputs. `APP_URL` defaults to `https://SITE_ID.web.app`; use the runtime Terraform `app_url` variable only for an already connected custom Hosting origin. If Google login is enabled, the allowlist comes from `--allowed-emails`, `GOOGLE_ALLOWED_EMAILS`, the saved Terraform value, or `.env`, in that order. The first interactive run prompts if none exists; noninteractive runs must provide one. The CLI's current Google account is never added implicitly.
 
-The API has one CPU, 512 MiB, concurrency 20, and at most two instances by default. Jobs run one task, allow no automatic retries, and time out after 30 minutes. Scheduler uses OAuth to invoke only the worker Job. Keep the Cloud Scheduler service-agent role so it can mint tokens. [Scheduled job authentication](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule).
+The API uses request-based billing, one CPU, 512 MiB, concurrency 20, and at most two instances by default. Jobs run one task, allow no automatic retries, and time out after 30 minutes. Scheduler uses OAuth to invoke only the worker Job. Keep the Cloud Scheduler service-agent role so it can mint tokens. [Scheduled job authentication](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule).
 
 ## Authentication and operations
 

@@ -54,6 +54,10 @@ run "active_stage" {
     error_message = "Web service must use API-only mode."
   }
   assert {
+    condition     = google_cloud_run_v2_service.api[0].template[0].containers[0].resources[0].cpu_idle
+    error_message = "Web service must use request-based billing."
+  }
+  assert {
     condition     = output.firebase_config.hosting.rewrites[0].run.serviceId == google_cloud_run_v2_service.api[0].name && output.firebase_config.hosting.rewrites[3].destination == "/index.html"
     error_message = "API rewrites must precede the static SPA fallback."
   }

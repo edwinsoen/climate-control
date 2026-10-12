@@ -139,7 +139,10 @@ resource "google_cloud_run_v2_service" "api" {
       image   = coalesce(var.api_image, var.image)
       command = ["python"]
       args    = ["-m", "climate_control.cli", "serve-api"]
-      resources { limits = { cpu = "1", memory = "512Mi" } }
+      resources {
+        limits   = { cpu = "1", memory = "512Mi" }
+        cpu_idle = true
+      }
       ports { container_port = 8080 }
       startup_probe {
         initial_delay_seconds = 0
