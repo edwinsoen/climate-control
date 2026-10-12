@@ -46,7 +46,7 @@ export function LocationForm({ api, onSave, onCancel }: {
     try {
       location = await new Promise<GeolocationPosition>((resolve, reject) =>
         navigator.geolocation.getCurrentPosition(resolve, reject, {
-          timeout: 30_000, maximumAge: 300_000, enableHighAccuracy: false,
+          timeout: 30_000, maximumAge: 300_000, enableHighAccuracy: true,
         }))
     } catch (err) { setError(locationError(err)); setActivity(''); return }
     await findStations('/api/outdoor/stations/nearby', {
