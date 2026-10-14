@@ -26,6 +26,8 @@ with tempfile.TemporaryDirectory(prefix="climate-e2e-") as directory:
         app_url="http://127.0.0.1:8091",
         frontend_dir=Path("frontend/dist"),
         aqicn_api_token="e2e-fake-key",
+        # Browser tests never call model APIs, whatever the developer environment holds.
+        agent_provider="disabled",
     )
     app = create_app(settings, FakeProvider(), outdoor_provider=FakeOutdoor())
 

@@ -482,7 +482,9 @@ def outdoor_view(db, settings):
     location_id = configuration.location_id
     station = db.get(OutdoorStation, location_id) if location_id else None
     current = time.time()
-    available = bool(settings.aqicn_api_token.get_secret_value())
+    # The planner reads cached readings without the AQICN token; cached data implies it exists.
+    token = getattr(settings, "aqicn_api_token", None)
+    available = bool(token.get_secret_value()) if token is not None else station is not None
     return {
         "available": available,
         "configured": location_id is not None,

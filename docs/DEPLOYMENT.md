@@ -6,7 +6,7 @@ Follow the [README](../README.md#run-locally), then run `docker compose up --bui
 
 ## GCP setup
 
-Firebase Hosting serves the UI and rewrites `/api`, `/auth`, and `/health` to a Cloud Run API. Cloud Scheduler starts a separate `tick` Cloud Run Job every minute for collection, automation, and cleanup. A migration Job updates the schema before each new API image is activated. All three runtimes share an **external PostgreSQL database**; Terraform does not provision a database or private network. Cloud Run must reach the database over public TLS egress. For example:
+Firebase Hosting serves the UI and rewrites `/api`, `/auth`, `/health`, and `/mcp` to a Cloud Run API. Cloud Scheduler starts a separate `tick` Cloud Run Job every minute for collection, automation, and cleanup, and a `plan` Job every five minutes for the [rule planner](AGENT.md). A migration Job updates the schema before each new API image is activated. All runtimes share an **external PostgreSQL database**; Terraform does not provision a database or private network. Cloud Run must reach the database over public TLS egress. For example:
 
 ```text
 postgresql+psycopg://USER:URL_ENCODED_PASSWORD@DB_HOST:5432/DATABASE?sslmode=require&connect_timeout=10
@@ -26,7 +26,7 @@ terraform -chdir=infra/gcp/bootstrap plan
 terraform -chdir=infra/gcp/bootstrap apply
 ```
 
-Bootstrap enables APIs and creates the registry, four service accounts, six empty Secret Manager containers, and the Firebase site. Existing Firebase project/site resources must be imported before apply:
+Bootstrap enables APIs (including Agent Platform and the Telemetry API) and creates the registry, six service accounts, eight empty Secret Manager containers, and the Firebase site. It grants trace and metric writers to the API, worker, planner, and Agent Runtime identities, Agent Platform access to the planner identities, and access to the agent secrets only to the Agent Runtime identity. Existing Firebase project/site resources must be imported before apply:
 
 ```sh
 terraform -chdir=infra/gcp/bootstrap import google_firebase_project.app projects/YOUR_PROJECT
@@ -43,7 +43,7 @@ Find container IDs in the bootstrap `platform.secret_ids` output. Add versions w
 gcloud secrets versions add SECRET_ID --project YOUR_PROJECT --data-file /outside/repo/secret-file
 ```
 
-Required: `DATABASE_URL`, `ENCRYPTION_KEY`, and either `ADMIN_PASSWORD_HASH` or both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. `AQICN_API_TOKEN` is optional. Leave unused containers empty. Generate the key and hash with `uv run python -m climate_control.cli key` and `uv run python -m climate_control.cli hash-password`. The key must be Fernet base64 text, not hex. Retain it with database backups. Surrounding whitespace in deployment secret text is trimmed, including a final newline; whitespace inside credentials is preserved.
+Required: `DATABASE_URL`, `ENCRYPTION_KEY`, and either `ADMIN_PASSWORD_HASH` or both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. `AQICN_API_TOKEN` is optional. `OPENROUTER_API_KEY` is needed only for an OpenRouter planner, and `AGENT_SERVICE_TOKEN` only for [Agent Runtime](AGENT.md#deploying-to-agent-runtime). Leave unused containers empty. Generate the key and hash with `uv run python -m climate_control.cli key` and `uv run python -m climate_control.cli hash-password`. The key must be Fernet base64 text, not hex. Retain it with database backups. Surrounding whitespace in deployment secret text is trimmed, including a final newline; whitespace inside credentials is preserved.
 
 ### Deploy or update
 
@@ -57,7 +57,9 @@ invoke deploy
 
 The deploy task applies Terraform automatically. Generated `platform.auto.tfvars.json` and `deployment.auto.tfvars.json` hold non-secret inputs. `APP_URL` defaults to `https://SITE_ID.web.app`; use the runtime Terraform `app_url` variable only for an already connected custom Hosting origin. If Google login is enabled, the allowlist comes from `--allowed-emails`, `GOOGLE_ALLOWED_EMAILS`, the saved Terraform value, or `.env`, in that order. The first interactive run prompts if none exists; noninteractive runs must provide one. The CLI's current Google account is never added implicitly.
 
-The API uses request-based billing, one CPU, 512 MiB, concurrency 20, and at most two instances by default. Jobs run one task, allow no automatic retries, and time out after 30 minutes. Scheduler uses OAuth to invoke only the worker Job. Keep the Cloud Scheduler service-agent role so it can mint tokens. [Scheduled job authentication](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule).
+The API uses request-based billing, one CPU, 512 MiB, concurrency 20, and at most two instances by default. Jobs run one task, allow no automatic retries, and time out after 30 minutes; the planner Job has 1 GiB. Scheduler uses OAuth to invoke only the worker and planner Jobs.
+
+The planner uses Gemini through Agent Platform by default. To change it, write `infra/gcp/runtime/agent.auto.tfvars.json`, for example `{"agent_provider": "openrouter", "agent_model": "MODEL_ID"}` with an `OPENROUTER_API_KEY` version, or `{"agent_provider": "disabled"}` to omit the planner Job, then rerun `invoke deploy`. The planner receives only `DATABASE_URL` and its model key; the API and worker never receive model or agent credentials. `invoke deploy-agent` moves planning to Agent Runtime; see [agents](AGENT.md#deploying-to-agent-runtime). If Agent Runtime rejects the custom runtime identity, grant the permissions in its custom service account guide. Keep the Cloud Scheduler service-agent role so it can mint tokens. [Scheduled job authentication](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule).
 
 ## Authentication and operations
 
@@ -71,7 +73,7 @@ Check `/health/ready`, sign-in, account connection, and controls at the Hosting 
 gcloud run jobs execute climate-control-worker --project YOUR_PROJECT --region asia-southeast1 --wait
 ```
 
-Use your configured region if different. Tick results include `checked`, `refreshed`, `outdoor_checked`, and `automation_checked`. Scheduler success confirms launch; inspect Cloud Run execution completion and logs for failures. Cached retrieval times should advance with no browser open. If migration execution fails, inspect that Job's logs, database reachability, and Secret Manager versions; rerun `invoke deploy` after correcting the issue.
+Use your configured region if different. Tick results include `checked`, `refreshed`, `outdoor_checked`, and `automation_checked`; planner results include `planning_checked`, `planning_completed`, and `planning_failed`. Traces for agent runs and MCP calls appear in Cloud Trace. Scheduler success confirms launch; inspect Cloud Run execution completion and logs for failures. Cached retrieval times should advance with no browser open. If migration execution fails, inspect that Job's logs, database reachability, and Secret Manager versions; rerun `invoke deploy` after correcting the issue.
 
 Back up PostgreSQL and retain the encryption key before upgrades. The old API remains available during migration, so schema changes must be compatible with it until replacement; take it offline for an incompatible migration. Image and UI rollback also requires schema compatibility. A Hosting rollback alone does not roll back API or worker code.
 
@@ -90,6 +92,7 @@ terraform -chdir=infra/gcp/runtime test
 
 - `0007` replaces OpenAQ selection with AQICN. Re-select a station; legacy history remains separate and expires under normal retention. Set `AQICN_API_TOKEN` in Secret Manager, then redeploy. The selected station collects every five minutes by default, without historical backfill.
 - `0008` adds observed purifier settings to history. Existing air-quality readings remain, but past settings are unknown; new settings appear after valid polls or readbacks.
-- `0009` adds automation and planning records. Existing and new devices start with automation disabled; agent mode requires an external authenticated planning worker. See [automation](AUTOMATION.md).
+- `0009` adds automation and planning records. Existing and new devices start with automation disabled. See [automation](AUTOMATION.md).
+- `0010` adds MCP access tokens, planner run records, and revision authors. Existing revisions have no author. Rerun the bootstrap (through `invoke deploy`) to create the planner identities, roles, and agent secrets.
 
 Local source upgrades require stopping the backend, backing up SQLite and its encryption key, running `uv run python -m climate_control.cli migrate`, then restarting. Compose handles migration on startup; GCP `invoke deploy` runs the migration Job before switching the API. The backend does not reload automatically.

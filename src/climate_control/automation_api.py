@@ -18,6 +18,7 @@ from climate_control.automation import (
 )
 from climate_control.db import (
     Account,
+    AgentRun,
     Automation,
     AutomationEvent,
     Device,
@@ -33,6 +34,13 @@ from climate_control.rules import Ruleset, StrictModel, evaluate
 router = APIRouter(
     prefix="/api/devices/{device_id}/automation", dependencies=[Depends(authenticated)]
 )
+
+
+def notify_planner(ctx):
+    """Start planning now instead of at the next scheduled check, when a planner exists."""
+    trigger = getattr(ctx, "planning_trigger", None)
+    if trigger is not None:
+        trigger()
 
 
 def get_state(db, device_id, *, lock=False):
@@ -92,6 +100,30 @@ def job_view(job):
     }
 
 
+def run_view(db, device_id, *, steps=False):
+    """The most recent planning run, so the UI can show progress and what the agent did."""
+    run = db.scalar(
+        select(AgentRun).where(AgentRun.device_id == device_id).order_by(AgentRun.started_at.desc())
+    )
+    if run is None:
+        return None
+    view = {
+        key: getattr(run, key)
+        for key in (
+            "id",
+            "status",
+            "model",
+            "attempts",
+            "llm_calls",
+            "error_kind",
+            "started_at",
+            "finished_at",
+            "revision_created",
+        )
+    }
+    return {**view, "steps": run.steps} if steps else {**view, "step_count": len(run.steps)}
+
+
 def state_view(db, device, state):
     ruleset = current_rules(db, state)
     return {
@@ -105,6 +137,7 @@ def state_view(db, device, state):
         "ruleset": ruleset.model_dump() if ruleset else None,
         "summary": state.runtime.get("summary"),
         "job": job_view(db.get(PlanningJob, device.id)),
+        "run": run_view(db, device.id),
     }
 
 
@@ -128,7 +161,7 @@ def invalidate(db, state):
         job.status, job.lease_token, job.lease_until = "cancelled", None, 0
 
 
-def pause_for_manual(db, device_id):
+def pause_for_manual(db, device_id, actor="user"):
     _, state = get_state(db, device_id, lock=True)
     if state.enabled:
         state.paused_until = time.time() + state.pause_seconds
@@ -143,7 +176,11 @@ def pause_for_manual(db, device_id):
             AutomationEvent(
                 device_id=device_id,
                 revision=state.revision,
-                details={"inhibition": "manual_pause", "paused_until": state.paused_until},
+                details={
+                    "inhibition": "manual_pause",
+                    "paused_until": state.paused_until,
+                    "actor": actor,
+                },
             )
         )
 
@@ -177,9 +214,17 @@ class AgentProposal(Proposal, JobLease):
     pass
 
 
+# Route handlers delegate to functions taking `ctx` (app state or an agent tool context)
+# so the UI, MCP tools, and the in-app planner share one implementation.
+
+
 @router.get("")
 def read_state(device_id: str, request: Request):
-    with request.app.state.sessions() as db:
+    return automation_view(request.app.state, device_id)
+
+
+def automation_view(ctx, device_id):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id)
         return state_view(db, device, state)
 
@@ -191,7 +236,11 @@ def schema(device_id: str):
 
 @router.put("")
 def configure(device_id: str, body: Configuration, request: Request):
-    with request.app.state.sessions() as db:
+    return configure_automation(request.app.state, device_id, body)
+
+
+def configure_automation(ctx, device_id, body: Configuration):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id, lock=True)
         check_version(state, body)
         if body.enabled and body.owner == "manual" and state.revision == 0:
@@ -205,12 +254,18 @@ def configure(device_id: str, body: Configuration, request: Request):
         if state.owner == "agent":
             request_review(db, state, {"reason": "configuration_changed"}, time.time(), force=True)
         db.commit()
+        if state.owner == "agent":
+            notify_planner(ctx)
         return state_view(db, device, state)
 
 
 @router.post("/pause")
 def pause(device_id: str, body: Pause, request: Request):
-    with request.app.state.sessions() as db:
+    return pause_automation(request.app.state, device_id, body)
+
+
+def pause_automation(ctx, device_id, body: Pause):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id, lock=True)
         state.paused_until = time.time() + body.seconds
         state.lease_token, state.lease_until = None, 0
@@ -220,7 +275,11 @@ def pause(device_id: str, body: Pause, request: Request):
 
 @router.post("/resume")
 def resume(device_id: str, request: Request):
-    with request.app.state.sessions() as db:
+    return resume_automation(request.app.state, device_id)
+
+
+def resume_automation(ctx, device_id):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id, lock=True)
         state.paused_until = 0
         runtime = copy.deepcopy(state.runtime)
@@ -239,19 +298,23 @@ def validate(db, device, ruleset):
 
 @router.post("/preview")
 def preview(device_id: str, body: Ruleset, request: Request):
-    with request.app.state.sessions() as db:
+    return preview_rules(request.app.state, device_id, body)
+
+
+def preview_rules(ctx, device_id, body: Ruleset):
+    with ctx.sessions() as db:
         device, _ = get_state(db, device_id)
         validate(db, device, body)
         now = time.time()
-        inputs = collect_inputs(db, body, request.app.state.settings, now)
+        inputs = collect_inputs(db, body, ctx.settings, now)
         return {
             "decision": evaluate(body, inputs, now),
             "inputs": inputs,
-            "target_available": fresh_device(db, device, request.app.state.settings, now),
+            "target_available": fresh_device(db, device, ctx.settings, now),
         }
 
 
-def activate(db, state, body, owner):
+def activate(db, state, body, owner, author):
     validate(db, db.get(Device, state.device_id), body.ruleset)
     invalidate(db, state)
     state.revision += 1
@@ -261,6 +324,7 @@ def activate(db, state, body, owner):
             device_id=state.device_id,
             revision=state.revision,
             owner=owner,
+            author=author,
             reason=body.reason,
             ruleset=body.ruleset.model_dump(),
         )
@@ -270,28 +334,37 @@ def activate(db, state, body, owner):
 
 @router.put("/ruleset")
 def save_rules(device_id: str, body: Proposal, request: Request):
-    with request.app.state.sessions() as db:
+    return save_manual_rules(request.app.state, device_id, body, "user")
+
+
+def save_manual_rules(ctx, device_id, body: Proposal, author):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id, lock=True)
         check_version(state, body)
         if state.owner != "manual":
             raise HTTPException(409, "Take manual ownership before editing rules.")
-        activate(db, state, body, "manual")
+        activate(db, state, body, "manual", author)
         db.commit()
         return state_view(db, device, state)
 
 
 @router.get("/revisions")
 def revisions(device_id: str, request: Request, before: int | None = None):
-    with request.app.state.sessions() as db:
+    return revisions_view(request.app.state, device_id, before)
+
+
+def revisions_view(ctx, device_id, before=None, limit=50):
+    with ctx.sessions() as db:
         get_state(db, device_id)
         query = select(RuleRevision).where(RuleRevision.device_id == device_id)
         if before is not None:
             query = query.where(RuleRevision.revision < before)
-        rows = list(db.scalars(query.order_by(RuleRevision.revision.desc()).limit(50)))
+        rows = list(db.scalars(query.order_by(RuleRevision.revision.desc()).limit(limit)))
         return [
             {
                 "revision": r.revision,
                 "owner": r.owner,
+                "author": r.author,
                 "reason": r.reason,
                 "created_at": r.created_at,
                 "ruleset": r.ruleset,
@@ -302,20 +375,64 @@ def revisions(device_id: str, request: Request, before: int | None = None):
 
 @router.get("/events")
 def events(device_id: str, request: Request, before: int | None = None):
-    with request.app.state.sessions() as db:
+    return events_view(request.app.state, device_id, before)
+
+
+def events_view(ctx, device_id, before=None, limit=50):
+    with ctx.sessions() as db:
         get_state(db, device_id)
         query = select(AutomationEvent).where(AutomationEvent.device_id == device_id)
         if before is not None:
             query = query.where(AutomationEvent.id < before)
         return [
             {"id": r.id, "created_at": r.created_at, "revision": r.revision, **r.details}
-            for r in db.scalars(query.order_by(AutomationEvent.id.desc()).limit(50))
+            for r in db.scalars(query.order_by(AutomationEvent.id.desc()).limit(limit))
+        ]
+
+
+@router.get("/runs")
+def runs(device_id: str, request: Request, limit: int = Query(default=5, ge=1, le=20)):
+    return runs_view(request.app.state, device_id, limit)
+
+
+def runs_view(ctx, device_id, limit=5):
+    with ctx.sessions() as db:
+        get_state(db, device_id)
+        rows = db.scalars(
+            select(AgentRun)
+            .where(AgentRun.device_id == device_id)
+            .order_by(AgentRun.started_at.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                key: getattr(run, key)
+                for key in (
+                    "id",
+                    "status",
+                    "model",
+                    "attempts",
+                    "llm_calls",
+                    "input_tokens",
+                    "output_tokens",
+                    "error_kind",
+                    "revision_created",
+                    "started_at",
+                    "finished_at",
+                    "steps",
+                )
+            }
+            for run in rows
         ]
 
 
 @router.get("/context")
 def context(device_id: str, request: Request):
-    with request.app.state.sessions() as db:
+    return context_view(request.app.state, device_id)
+
+
+def context_view(ctx, device_id, *, history_limit=1000):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id)
         ruleset = current_rules(db, state)
         devices = list(db.scalars(select(Device)))
@@ -331,18 +448,16 @@ def context(device_id: str, request: Request):
                     "controls": d.controls,
                     "state": d.state,
                     "retrieved_at": d.retrieved_at,
-                    "available": fresh_device(db, d, request.app.state.settings, time.time()),
+                    "available": fresh_device(db, d, ctx.settings, time.time()),
                     "history_url": f"/api/devices/{d.id}/history?hours=720&raw=true",
                 }
                 for d in devices
             ],
             "outdoor_station_id": config.location_id if config else None,
-            "outdoor": outdoor_view(db, request.app.state.settings),
+            "outdoor": outdoor_view(db, ctx.settings),
             "outdoor_url": "/api/outdoor",
             "outdoor_history_url": f"/api/devices/{device_id}/automation/outdoor-history",
-            "inputs": collect_inputs(db, ruleset, request.app.state.settings, time.time())
-            if ruleset
-            else {},
+            "inputs": collect_inputs(db, ruleset, ctx.settings, time.time()) if ruleset else {},
             "units": {
                 "pm25": "µg/m³",
                 "pm1": "µg/m³",
@@ -350,7 +465,9 @@ def context(device_id: str, request: Request):
                 "air_quality": "rank 1–4",
                 "outdoor": "AQI",
             },
-            "target_history": history_view(db, device_id, 720, time.time(), raw=True, limit=1000),
+            "target_history": history_view(
+                db, device_id, 720, time.time(), raw=True, limit=history_limit
+            ),
             "events_url": f"/api/devices/{device_id}/automation/events",
         }
 
@@ -364,6 +481,12 @@ def outdoor_history(
 ):
     with request.app.state.sessions() as db:
         get_state(db, device_id)
+    return outdoor_observations(request.app.state, after, limit)
+
+
+def outdoor_observations(ctx, after=0, limit=1000):
+    """Exact selected-station observations from the last 30 days, in AQI units."""
+    with ctx.sessions() as db:
         config = db.get(OutdoorConfiguration, 1)
         if not config or not config.location_id:
             return {"observations": [], "next_after": None}
@@ -398,18 +521,47 @@ def outdoor_history(
 
 @router.post("/reconsider")
 def reconsider(device_id: str, request: Request):
-    with request.app.state.sessions() as db:
+    return request_reconsideration(request.app.state, device_id)
+
+
+def request_reconsideration(ctx, device_id):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id, lock=True)
         if state.owner != "agent":
             raise HTTPException(409, "This device is manually managed.")
         request_review(db, state, {"reason": "user_request"}, time.time(), force=True)
         db.commit()
+        notify_planner(ctx)
         return state_view(db, device, state)
 
 
 @router.post("/jobs/claim")
 def claim_job(device_id: str, request: Request):
-    with request.app.state.sessions() as db:
+    return claim_planning_job(request.app.state, device_id)
+
+
+def claimable_jobs(ctx, limit=50):
+    """Device IDs with agent planning work available now, oldest first."""
+    now = time.time()
+    with ctx.sessions() as db:
+        return list(
+            db.scalars(
+                select(PlanningJob.device_id)
+                .join(Automation, Automation.device_id == PlanningJob.device_id)
+                .where(
+                    Automation.owner == "agent",
+                    PlanningJob.status.in_(("pending", "claimed")),
+                    PlanningJob.available_at <= now,
+                    PlanningJob.lease_until <= now,
+                )
+                .order_by(PlanningJob.available_at, PlanningJob.created_at)
+                .limit(limit)
+            )
+        )
+
+
+def claim_planning_job(ctx, device_id):
+    with ctx.sessions() as db:
         _, state = get_state(db, device_id, lock=True)
         job = db.get(PlanningJob, device_id)
         now = time.time()
@@ -447,7 +599,11 @@ def owned_job(db, state, body):
 
 @router.post("/jobs/renew")
 def renew_job(device_id: str, body: JobLease, request: Request):
-    with request.app.state.sessions() as db:
+    return renew_planning_job(request.app.state, device_id, body)
+
+
+def renew_planning_job(ctx, device_id, body: JobLease):
+    with ctx.sessions() as db:
         _, state = get_state(db, device_id, lock=True)
         job = owned_job(db, state, body)
         job.lease_until = time.time() + 300
@@ -457,7 +613,11 @@ def renew_job(device_id: str, body: JobLease, request: Request):
 
 @router.post("/jobs/fail")
 def fail_job(device_id: str, body: JobLease, request: Request):
-    with request.app.state.sessions() as db:
+    return fail_planning_job(request.app.state, device_id, body)
+
+
+def fail_planning_job(ctx, device_id, body: JobLease):
+    with ctx.sessions() as db:
         _, state = get_state(db, device_id, lock=True)
         job = owned_job(db, state, body)
         job.status, job.lease_token, job.lease_until = "pending", None, 0
@@ -468,12 +628,23 @@ def fail_job(device_id: str, body: JobLease, request: Request):
 
 @router.post("/jobs/complete")
 def complete_job(device_id: str, body: AgentProposal, request: Request):
-    with request.app.state.sessions() as db:
+    return complete_planning_job(request.app.state, device_id, body, "agent")
+
+
+def complete_planning_job(ctx, device_id, body: AgentProposal, author):
+    with ctx.sessions() as db:
         device, state = get_state(db, device_id, lock=True)
         check_version(state, body)
         job = owned_job(db, state, body)
         later_reasons = job.reasons[job.claimed_reasons :]
-        activate(db, state, body, "agent")
+        current = current_rules(db, state)
+        if current is not None and current == body.ruleset:
+            # Confirming the active rules schedules the next review without a new revision,
+            # so evaluation candidates and dwell timers are not reset.
+            validate(db, device, body.ruleset)
+            state.next_review_at = time.time() + body.ruleset.review_after_seconds
+        else:
+            activate(db, state, body, "agent", author)
         job.status, job.lease_token, job.lease_until = "completed", None, 0
         for reason in later_reasons:
             request_review(

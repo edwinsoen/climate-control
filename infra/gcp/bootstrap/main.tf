@@ -29,10 +29,20 @@ provider "google-beta" {
 }
 locals {
   site_id = coalesce(var.site_id, var.project_id)
-  secrets = toset(["DATABASE_URL", "ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_PASSWORD_HASH", "AQICN_API_TOKEN"])
+  secrets = toset(["DATABASE_URL", "ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_PASSWORD_HASH", "AQICN_API_TOKEN", "OPENROUTER_API_KEY", "AGENT_SERVICE_TOKEN"])
+  # planner runs the scheduled planning job; agent is the Agent Runtime identity.
+  telemetry_roles = ["roles/telemetry.tracesWriter", "roles/telemetry.metricsWriter"]
+  project_roles = merge(
+    { for pair in setproduct(["api", "worker", "planner", "agent"], local.telemetry_roles) : "${pair[0]}-${pair[1]}" => { identity = pair[0], role = pair[1] } },
+    {
+      planner-aiplatform = { identity = "planner", role = "roles/aiplatform.user" }
+      agent-aiplatform   = { identity = "agent", role = "roles/aiplatform.user" }
+      agent-logging      = { identity = "agent", role = "roles/logging.logWriter" }
+    }
+  )
 }
 resource "google_project_service" "api" {
-  for_each           = toset(["run.googleapis.com", "cloudscheduler.googleapis.com", "secretmanager.googleapis.com", "artifactregistry.googleapis.com", "cloudbuild.googleapis.com", "firebase.googleapis.com", "firebasehosting.googleapis.com", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "serviceusage.googleapis.com"])
+  for_each           = toset(["run.googleapis.com", "cloudscheduler.googleapis.com", "secretmanager.googleapis.com", "artifactregistry.googleapis.com", "cloudbuild.googleapis.com", "firebase.googleapis.com", "firebasehosting.googleapis.com", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "serviceusage.googleapis.com", "aiplatform.googleapis.com", "telemetry.googleapis.com", "cloudtrace.googleapis.com", "monitoring.googleapis.com", "logging.googleapis.com"])
   service            = each.key
   disable_on_destroy = false
 }
@@ -43,7 +53,7 @@ resource "google_artifact_registry_repository" "images" {
   depends_on    = [google_project_service.api]
 }
 resource "google_service_account" "runtime" {
-  for_each     = toset(["api", "worker", "migrate", "scheduler"])
+  for_each     = toset(["api", "worker", "migrate", "scheduler", "planner", "agent"])
   account_id   = "${var.name}-${each.key}"
   display_name = "Climate Control ${each.key}"
   depends_on   = [google_project_service.api]
@@ -56,6 +66,19 @@ resource "google_secret_manager_secret" "config" {
   }
   lifecycle { prevent_destroy = true }
   depends_on = [google_project_service.api]
+}
+resource "google_project_iam_member" "runtime" {
+  for_each = local.project_roles
+  project  = var.project_id
+  role     = each.value.role
+  member   = "serviceAccount:${google_service_account.runtime[each.value.identity].email}"
+}
+resource "google_secret_manager_secret_iam_member" "agent" {
+  # Agent Runtime reads its MCP token and model key from Secret Manager at runtime.
+  for_each  = toset(["AGENT_SERVICE_TOKEN", "OPENROUTER_API_KEY"])
+  secret_id = google_secret_manager_secret.config[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime["agent"].email}"
 }
 resource "google_firebase_project" "app" {
   provider   = google-beta

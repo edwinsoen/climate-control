@@ -19,6 +19,19 @@ dependencies = [
   "google-auth>=2.38,<3",
   "requests>=2.32,<3",
   "pyvesync>=3,<4",
+  "google-adk[mcp]>=2.12,<3",
+  "mcp>=2.3,<3",
+  "litellm>=1.84,<2",
+  "opentelemetry-exporter-gcp-trace>=1.9,<2",
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+]
+
+[project.optional-dependencies]
+agent-runtime = [
+    "google-cloud-agentplatform[agent-engines]>=2.5,<3",
 ]
 
 [dependency-groups]

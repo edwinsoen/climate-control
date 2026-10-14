@@ -1,9 +1,13 @@
+import os
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from climate_control.agent.planner import DEFAULT_MODELS
 
 
 class DatabaseSettings(BaseSettings):
@@ -17,14 +21,79 @@ class DatabaseSettings(BaseSettings):
         return value.strip() if isinstance(value, str) else value
 
 
-class WorkerSettings(DatabaseSettings):
-    encryption_key: str
+class ObservationSettings(DatabaseSettings):
+    """Freshness limits shared by readers of cached observations."""
+
     poll_interval_seconds: int = Field(default=60, ge=60, le=3600)
-    request_spacing_seconds: float = Field(default=1.0, ge=1.0)
     stale_after_seconds: int = Field(default=180, ge=180)
-    aqicn_api_token: SecretStr = SecretStr("")
     outdoor_poll_interval_seconds: int = Field(default=300, ge=60, le=3600)
     outdoor_stale_after_seconds: int = Field(default=10800, ge=60)
+
+
+def on_gcp() -> bool:
+    return bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
+
+
+class AgentSettings(ObservationSettings):
+    """Planner settings. Planning reads cached data only and needs no provider secrets."""
+
+    agent_provider: Literal["auto", "openrouter", "gemini", "disabled"] = "auto"
+    agent_model: str = ""
+    openrouter_api_key: SecretStr = SecretStr("")
+    google_cloud_project: str = ""
+    google_cloud_location: str = "global"
+    agent_runtime: Literal["embedded", "remote"] = "embedded"
+    agent_runtime_resource: str = ""
+    agent_max_llm_calls: int = Field(default=20, ge=1, le=100)
+    agent_job_timeout_seconds: int = Field(default=240, ge=30, le=280)
+    agent_tick_budget_seconds: int = Field(default=600, ge=30, le=1700)
+    telemetry: Literal["auto", "gcp", "off"] = "auto"
+
+    @field_validator("openrouter_api_key", mode="before")
+    @classmethod
+    def trim_agent_secrets(cls, value):
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        return value.strip() if isinstance(value, str) else value
+
+    @property
+    def model_provider(self) -> str | None:
+        """Resolved provider, or None when the in-app agent is disabled."""
+        if self.agent_runtime == "remote":
+            return "remote"
+        if self.agent_provider == "auto":
+            if on_gcp() and self.google_cloud_project:
+                return "gemini"
+            return "openrouter" if self.openrouter_api_key.get_secret_value() else None
+        if self.agent_provider == "openrouter" and not self.openrouter_api_key.get_secret_value():
+            return None
+        if self.agent_provider == "gemini" and not self.google_cloud_project:
+            return None
+        return None if self.agent_provider == "disabled" else self.agent_provider
+
+    @property
+    def model_name(self) -> str:
+        if self.agent_model:
+            return self.agent_model
+        return DEFAULT_MODELS.get(self.model_provider or "", "")
+
+    @property
+    def telemetry_enabled(self) -> bool:
+        return self.telemetry == "gcp" or (self.telemetry == "auto" and on_gcp())
+
+    @model_validator(mode="after")
+    def validate_agent(self):
+        if self.agent_runtime == "remote" and not self.agent_runtime_resource.startswith(
+            "projects/"
+        ):
+            raise ValueError("AGENT_RUNTIME_RESOURCE must be a full Agent Runtime resource name")
+        return self
+
+
+class WorkerSettings(AgentSettings):
+    encryption_key: str
+    request_spacing_seconds: float = Field(default=1.0, ge=1.0)
+    aqicn_api_token: SecretStr = SecretStr("")
 
     @field_validator("encryption_key", "aqicn_api_token", mode="before")
     @classmethod
@@ -52,6 +121,11 @@ class Settings(WorkerSettings):
     api_operation_timeout_seconds: float = Field(default=0, ge=0, le=50)
     frontend_dir: Path = Path("frontend/dist")
     session_ttl_seconds: int = Field(default=86400, ge=300, le=604800)
+    # Backend listen port; Cloud Run sets PORT itself.
+    port: int = Field(default=8080, ge=1, le=65535)
+    auto_migrate: bool = False
+    # Cloud Run Job the API starts when planning is requested (projects/P/locations/R/jobs/N).
+    planner_job: str = ""
 
     @field_validator(
         "admin_password_hash", "google_client_id", "google_client_secret", mode="before"

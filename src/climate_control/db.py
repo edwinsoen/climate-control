@@ -239,15 +239,14 @@ class RuleRevision(Base):
     owner: Mapped[str] = mapped_column(String(10))
     ruleset: Mapped[dict] = mapped_column(JSON)
     reason: Mapped[str] = mapped_column(String(1000))
+    author: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[float] = mapped_column(default=now)
 
 
 class AutomationEvent(Base):
     __tablename__ = "automation_events"
     id: Mapped[int] = mapped_column(primary_key=True)
-    device_id: Mapped[str] = mapped_column(
-        ForeignKey("devices.id", ondelete="CASCADE"), index=True
-    )
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[float] = mapped_column(default=now, index=True)
     revision: Mapped[int]
     details: Mapped[dict] = mapped_column(JSON)
@@ -270,3 +269,39 @@ class PlanningJob(Base):
     lease_until: Mapped[float] = mapped_column(default=0.0)
     attempts: Mapped[int] = mapped_column(default=0)
     claimed_reasons: Mapped[int] = mapped_column(default=0)
+
+
+class AccessToken(Base):
+    """Bearer credential for MCP clients; only the hash is stored."""
+
+    __tablename__ = "access_tokens"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    scopes: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(default=now)
+    last_used_at: Mapped[float | None] = mapped_column(nullable=True)
+    expires_at: Mapped[float | None] = mapped_column(nullable=True)
+    revoked_at: Mapped[float | None] = mapped_column(nullable=True)
+
+
+class AgentRun(Base):
+    """Planner run metadata. Prompts and model output are not stored."""
+
+    __tablename__ = "agent_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    request_id: Mapped[str] = mapped_column(String(36))
+    mode: Mapped[str] = mapped_column(String(20))
+    model: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    llm_calls: Mapped[int] = mapped_column(default=0)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    attempts: Mapped[int] = mapped_column(default=0)
+    error_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    revision_created: Mapped[int | None] = mapped_column(nullable=True)
+    # Ordered record of what the planner did, shown in the rule editor.
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    started_at: Mapped[float] = mapped_column(default=now, index=True)
+    finished_at: Mapped[float | None] = mapped_column(nullable=True)

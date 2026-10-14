@@ -38,6 +38,13 @@ subprocess.run(
     check=True,
 )
 subprocess.run(["python", "-m", "climate_control.cli", "tick"], env=worker_environment, check=True)
+# Planning needs only the database; it starts without encryption or provider secrets.
+subprocess.run(
+    ["python", "-m", "climate_control.cli", "plan"],
+    env={**worker_environment, "ENCRYPTION_KEY": "", "AGENT_PROVIDER": "disabled"},
+    check=True,
+)
+subprocess.run(["python", "-c", "import agentplatform, climate_control.agent.remote"], check=True)
 
 
 def start():
@@ -92,4 +99,6 @@ try:
     )
 finally:
     stop(server)
-print("Container smoke test passed: migrations, worker tick, web mode, login, and restart.")
+print(
+    "Container smoke test passed: migrations, worker tick, planner, web mode, login, and restart."
+)

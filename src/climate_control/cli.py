@@ -2,13 +2,14 @@ import argparse
 import asyncio
 import getpass
 import logging
-import os
 
 import uvicorn
 from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
 
+from climate_control import telemetry
+from climate_control.config import AgentSettings, Settings, WorkerSettings
 from climate_control.runtime import run_tick
 from climate_control.security import password_hasher
 
@@ -16,7 +17,8 @@ from climate_control.security import password_hasher
 def main():
     parser = argparse.ArgumentParser(description="Climate Control administration")
     parser.add_argument(
-        "command", choices=["key", "hash-password", "migrate", "serve", "serve-api", "tick"]
+        "command",
+        choices=["key", "hash-password", "migrate", "serve", "serve-api", "tick", "plan"],
     )
     args = parser.parse_args()
     if args.command == "key":
@@ -29,17 +31,25 @@ def main():
         print(password_hasher.hash(password))
     elif args.command == "migrate":
         command.upgrade(Config("alembic.ini"), "head")
-    elif args.command == "tick":
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    elif args.command in {"tick", "plan"}:
+        from climate_control.agent.worker import run_plan
+
+        name = "worker_tick" if args.command == "tick" else "planner_tick"
         try:
-            result = asyncio.run(run_tick())
+            settings = WorkerSettings() if args.command == "tick" else AgentSettings()
+            telemetry.configure(settings, "worker" if args.command == "tick" else "planner")
+            result = asyncio.run(
+                run_tick(settings) if args.command == "tick" else run_plan(settings)
+            )
         except Exception:
-            logging.getLogger(__name__).error("worker_tick_failed")
+            logging.basicConfig(level=logging.INFO)
+            logging.getLogger(__name__).error("%s_failed", name)
             raise SystemExit(1) from None
-        logging.getLogger(__name__).info("worker_tick_completed counts=%s", result)
+        logging.getLogger(__name__).info("%s_completed counts=%s", name, result)
     else:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-        if args.command == "serve" and os.environ.get("AUTO_MIGRATE", "false").lower() == "true":
+        settings = Settings()
+        telemetry.configure(settings, "api" if args.command == "serve-api" else "app")
+        if args.command == "serve" and settings.auto_migrate:
             command.upgrade(Config("alembic.ini"), "head")
         uvicorn.run(
             "climate_control.main:create_api_app"
@@ -47,7 +57,7 @@ def main():
             else "climate_control.main:create_app",
             factory=True,
             host="0.0.0.0",
-            port=int(os.environ.get("PORT", "8080")),
+            port=settings.port,
             proxy_headers=False,
             access_log=False,
         )

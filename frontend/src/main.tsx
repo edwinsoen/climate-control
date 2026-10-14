@@ -6,6 +6,7 @@ import type { Account } from './accounts/types'
 import { AirQualityChart } from './devices/AirQualityChart'
 import { DeviceControls, type ControlOptions } from './devices/DeviceControls'
 import { AutomationPage, type AutomationSummary } from './devices/AutomationPage'
+import { AgentAccess } from './agent/AgentAccess'
 import { UserMenu } from './UserMenu'
 import { OutdoorCard, type Outdoor } from './outdoor/OutdoorCard'
 import { CardHeader } from './components/CardHeader'
@@ -263,6 +264,7 @@ function App() {
       {accountsPage && accounts.length === 0 && <section className="empty-state">
         <div className="empty-icon"><Icon /></div><h2 data-testid="empty-title">No accounts connected</h2>
       </section>}
+      {accountsPage && <AgentAccess api={api} />}
     </main>
     {editing !== undefined && <div className="modal-backdrop"><section className="modal" data-testid="account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <div className="modal-header"><div><h2 id="account-title">{editing ? 'Reconnect account' : 'Connect an account'}</h2></div>

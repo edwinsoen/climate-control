@@ -140,7 +140,9 @@ def existing_runtime(session):
             },
         },
         {"address": "google_cloud_scheduler_job.tick", "values": {}},
+        {"address": "google_cloud_scheduler_job.plan[0]", "values": {}},
         {"address": 'google_cloud_run_v2_job.job["worker"]', "values": {}},
+        {"address": 'google_cloud_run_v2_job.job["planner"]', "values": {}},
         {"address": 'google_cloud_run_v2_job.job["migrate"]', "values": {}},
     ]
     return old_image
@@ -173,17 +175,19 @@ def test_update_retains_api_and_secret_versions_until_migrations_succeed(deploym
     assert staged["secret_versions"]["DATABASE_URL"] == "10"
     assert api["api_image"] is None and api["api_secret_versions"] is None
     commands = deployment["commands"]
-    pause = next(
+    pauses = [
         i for i, cmd in enumerate(commands) if cmd[:4] == ["gcloud", "scheduler", "jobs", "pause"]
-    )
+    ]
+    assert {commands[i][4] for i in pauses} == {"climate-control-tick", "climate-control-plan"}
     drain = next(
         i
         for i, cmd in enumerate(commands)
         if cmd[:5] == ["gcloud", "run", "jobs", "executions", "list"]
     )
-    assert pause < drain
+    assert max(pauses) < drain
     assert {cmd[cmd.index("--job") + 1] for cmd in commands if "--job" in cmd} == {
         "climate-control-worker",
+        "climate-control-planner",
         "climate-control-migrate",
     }
 
@@ -275,3 +279,35 @@ def test_worker_drain_times_out_without_cancelling_jobs(deployment, monkeypatch)
             {"name": "climate", "project_id": "test", "region": "region"}, "worker", timeout=0
         )
     assert all("cancel" not in command for command in commands)
+
+
+def test_agent_deployment_stages_secret_references_not_values(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
+    from scripts import deploy_agent
+
+    # The Agent Platform SDK is an optional extra; pin a placeholder version.
+    monkeypatch.setattr(deploy_agent, "version", lambda package: "1.0")
+
+    platform = {
+        "project_id": "test-project",
+        "secret_ids": {"AGENT_SERVICE_TOKEN": "agent-token", "OPENROUTER_API_KEY": "openrouter"},
+    }
+    environment = deploy_agent.agent_environment(
+        platform, "https://test-site.web.app", "openrouter", ""
+    )
+    folder = deploy_agent.stage(tmp_path, environment)
+    staged = (folder / ".env").read_text()
+    assert "CLIMATE_CONTROL_MCP_URL=https://test-site.web.app/mcp" in staged
+    assert "OPENROUTER_API_KEY_SECRET=projects/test-project/secrets/openrouter" in staged
+    assert "AGENT_MODEL=" not in staged
+    assert "google-adk[mcp]==1.0" in (folder / "requirements.txt").read_text()
+    assert (folder / "agent.py").exists()
+
+    from climate_control.agent import remote
+
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(remote, "secret_value", lambda secret: "secret-from-manager")
+    agent = remote.planner_from_environment()
+    assert agent.model.model == "openrouter/~google/gemini-flash-latest"
+    assert [type(tool).__name__ for tool in agent.tools] == ["McpToolset"]

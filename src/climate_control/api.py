@@ -44,7 +44,12 @@ FLOW_COOKIE = SESSION_COOKIE
 
 
 async def provider_operation(request: Request, operation):
-    timeout = request.app.state.settings.api_operation_timeout_seconds
+    return await bounded_operation(request.app.state, operation)
+
+
+async def bounded_operation(ctx, operation):
+    """Bound interactive provider work; ctx is app state or an agent tool context."""
+    timeout = ctx.settings.api_operation_timeout_seconds
     try:
         async with asyncio.timeout(timeout or None):
             return await operation
@@ -429,17 +434,21 @@ def disconnect_account(account_id: str, request: Request):
 
 @router.get("/api/devices", dependencies=[Depends(authenticated)])
 def list_devices(request: Request):
-    with request.app.state.sessions() as db:
+    return devices_view(request.app.state)
+
+
+def devices_view(ctx) -> list[dict]:
+    with ctx.sessions() as db:
         devices = db.execute(
             select(Device, Account).join(Account).order_by(Account.label, Device.name)
         )
-        return [device_view(device, account, request) for device, account in devices]
+        return [device_view(device, account, ctx) for device, account in devices]
 
 
-def device_view(device: Device, account: Account, request: Request) -> dict:
+def device_view(device: Device, account: Account, ctx) -> dict:
     from climate_control.db import Automation, PlanningJob
 
-    with request.app.state.sessions() as db:
+    with ctx.sessions() as db:
         automation = db.get(Automation, device.id)
         job = db.get(PlanningJob, device.id)
         automation_view = (
@@ -455,8 +464,8 @@ def device_view(device: Device, account: Account, request: Request) -> dict:
         )
     current = time.time()
     stale_after = max(
-        request.app.state.settings.stale_after_seconds,
-        request.app.state.settings.poll_interval_seconds * 3,
+        ctx.settings.stale_after_seconds,
+        ctx.settings.poll_interval_seconds * 3,
     )
     return {
         "id": device.id,
@@ -494,7 +503,12 @@ class ControlInput(BaseModel):
 
 @router.post("/api/devices/{device_id}/control", dependencies=[Depends(authenticated)])
 async def control_device(device_id: str, payload: ControlInput, request: Request):
-    with request.app.state.sessions() as db:
+    return await control(request.app.state, device_id, payload, "user")
+
+
+async def control(ctx, device_id: str, payload: ControlInput, actor: str):
+    """Direct control shared by the UI and agent tools; it pauses rules first."""
+    with ctx.sessions() as db:
         device = db.get(Device, device_id)
         if device is None:
             raise HTTPException(404, "Device not found.")
@@ -518,29 +532,32 @@ async def control_device(device_id: str, payload: ControlInput, request: Request
             raise HTTPException(409, "Turn on the device first.")
         from climate_control.automation_api import pause_for_manual
 
-        pause_for_manual(db, device_id)
+        pause_for_manual(db, device_id, actor)
         db.commit()
-    result = await provider_operation(
-        request,
-        request.app.state.poller.queued_control(device_id, DeviceCommand(**payload.model_dump())),
+    result = await bounded_operation(
+        ctx, ctx.poller.queued_control(device_id, DeviceCommand(**payload.model_dump()))
     )
-    return control_response(device_id, result, request)
+    return control_response(device_id, result, ctx)
 
 
 @router.post("/api/devices/{device_id}/status", dependencies=[Depends(authenticated)])
 async def retrieve_device_status(device_id: str, request: Request):
-    with request.app.state.sessions() as db:
+    return await refresh_status(request.app.state, device_id)
+
+
+async def refresh_status(ctx, device_id: str):
+    with ctx.sessions() as db:
         device = db.get(Device, device_id)
         if device is None:
             raise HTTPException(404, "Device not found.")
         account = db.get(Account, device.account_id)
         if not device.supported or account.provider != "vesync":
             raise HTTPException(422, "This device does not support status retrieval.")
-    result = await provider_operation(request, request.app.state.poller.control(device_id, None))
-    return control_response(device_id, result, request)
+    result = await bounded_operation(ctx, ctx.poller.control(device_id, None))
+    return control_response(device_id, result, ctx)
 
 
-def control_response(device_id, result, request):
+def control_response(device_id, result, ctx):
     if result.status == "missing":
         raise HTTPException(404, "Device not found.")
     if result.status == "busy":
@@ -563,18 +580,18 @@ def control_response(device_id, result, request):
         )
         headers = None
         if result.status == "rate_limit":
-            with request.app.state.sessions() as db:
+            with ctx.sessions() as db:
                 device = db.get(Device, device_id)
                 account = db.get(Account, device.account_id) if device else None
                 retry = max(1, math.ceil(account.next_poll_at - time.time())) if account else 300
             headers = {"Retry-After": str(retry)}
         raise HTTPException(status, str(ProviderError(result.status)), headers=headers)
-    with request.app.state.sessions() as db:
+    with ctx.sessions() as db:
         device = db.get(Device, device_id)
         if device is None:
             raise HTTPException(404, "Device was removed while changing its settings.")
         return {
-            **device_view(device, db.get(Account, device.account_id), request),
+            **device_view(device, db.get(Account, device.account_id), ctx),
             "control_confirmed": result.control_confirmed,
         }
 
@@ -674,9 +691,13 @@ def device_history(
     after: float | None = Query(default=None, ge=0, allow_inf_nan=False),
     limit: int = Query(default=1000, ge=1, le=5000),
 ):
+    return device_history_view(request.app.state, device_id, hours, raw, after, limit)
+
+
+def device_history_view(ctx, device_id, hours=24, raw=False, after=None, limit=1000):
     if hours not in {24, 168, 720}:
         raise HTTPException(422, "Choose a history period of 24 hours, 7 days, or 30 days.")
-    with request.app.state.sessions() as db:
+    with ctx.sessions() as db:
         if db.get(Device, device_id) is None:
             raise HTTPException(404, "Device not found.")
         return history_view(
@@ -685,7 +706,7 @@ def device_history(
             hours,
             time.time(),
             raw=raw,
-            gap_seconds=max(180, request.app.state.settings.poll_interval_seconds * 3),
+            gap_seconds=max(180, ctx.settings.poll_interval_seconds * 3),
             after=after,
             limit=limit,
         )

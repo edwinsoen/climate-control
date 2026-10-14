@@ -8,8 +8,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 from starlette.responses import FileResponse, JSONResponse
+from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+from climate_control import __version__
+from climate_control.agent.access import router as access_router
+from climate_control.agent.mcp_server import create_mcp_server, mcp_app
+from climate_control.agent.worker import PlannerJobTrigger, PlannerWorker, create_planner
 from climate_control.api import legacy_scheduler_router, router
 from climate_control.automation_api import router as automation_router
 from climate_control.config import Settings
@@ -33,15 +38,22 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app):
-        task = (
-            asyncio.create_task(poller.run())
-            if settings.scheduler_enabled and not api_only
-            else None
-        )
+        tasks = []
+        if settings.scheduler_enabled and not api_only:
+            tasks.append(asyncio.create_task(poller.run()))
+            planner = create_planner(sessions, settings)
+            if planner is not None:
+                # Separate from the poll loop so slow model calls never delay rule execution.
+                worker = PlannerWorker(sessions, settings, planner)
+                app.state.planning_trigger = worker.notify
+                tasks.append(asyncio.create_task(worker.run()))
+        elif settings.planner_job:
+            app.state.planning_trigger = PlannerJobTrigger(settings.planner_job)
         try:
-            yield
+            async with mcp.session_manager.run():
+                yield
         finally:
-            if task:
+            for task in tasks:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -49,7 +61,7 @@ def create_app(
 
     app = FastAPI(
         title="Climate Control",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -62,10 +74,16 @@ def create_app(
     app.state.vault = vault
     app.state.poller = poller
     app.state.outdoor = outdoor
+    app.state.planning_trigger = None
     app.include_router(router)
     if not api_only:
         app.include_router(legacy_scheduler_router)
     app.include_router(automation_router)
+    app.include_router(access_router)
+    mcp = create_mcp_server(app.state)
+    app.router.routes.append(
+        Route("/mcp", mcp_app(mcp, sessions), methods=["GET", "POST", "DELETE"])
+    )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -98,7 +116,7 @@ def create_app(
             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'"
         )
-        if request.url.path.startswith(("/api/", "/auth/", "/internal/")):
+        if request.url.path.startswith(("/api/", "/auth/", "/internal/", "/mcp")):
             response.headers["Cache-Control"] = "no-store"
         if settings.secure_cookies:
             response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -131,7 +149,7 @@ def create_app(
 
     @app.get("/{path:path}")
     def frontend(path: str):
-        if path.startswith(("api/", "auth/", "health/", "internal/")):
+        if path.startswith(("api/", "auth/", "health/", "internal/")) or path == "mcp":
             raise HTTPException(404)
         if not (static / "index.html").is_file():
             raise HTTPException(503, "Build the web UI with npm run build in frontend/.")

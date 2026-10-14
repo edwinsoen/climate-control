@@ -67,6 +67,18 @@ def test_provider_migration_preserves_existing_accounts(tmp_path):
     columns = {column["name"]: column for column in inspect(engine).get_columns("accounts")}
     assert not columns["provider"]["nullable"]
     assert columns["provider"]["default"] == "'vesync'"
+    command.downgrade(config, "0009")
+    with engine.begin() as connection:
+        connection.execute(
+            text("""
+            INSERT INTO rule_revisions (id, device_id, revision, owner, ruleset, reason, created_at)
+            VALUES ('r1', 'existing-device', 1, 'manual', '{}', 'Saved', 1)
+        """)
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT * FROM rule_revisions")).mappings().one()
+        assert (revision["reason"], revision["author"]) == ("Saved", None)
     command.downgrade(config, "0007")
     command.upgrade(config, "head")
     with engine.connect() as connection:

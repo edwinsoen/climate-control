@@ -56,6 +56,29 @@ variable "api_enabled" {
   type        = bool
   default     = false
 }
+variable "agent_provider" {
+  description = "Model provider for the scheduled planner: gemini (Agent Platform), openrouter, or disabled."
+  type        = string
+  default     = "gemini"
+  validation {
+    condition     = contains(["gemini", "openrouter", "disabled"], var.agent_provider)
+    error_message = "Use gemini, openrouter, or disabled."
+  }
+}
+variable "agent_model" {
+  description = "Model ID; empty uses the provider's default alias."
+  type        = string
+  default     = ""
+}
+variable "agent_runtime_resource" {
+  description = "Agent Runtime resource name; when set, the planner queries the remotely deployed agent."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.agent_runtime_resource == "" || can(regex("^projects/[^/]+/locations/[^/]+/reasoningEngines/[^/]+$", var.agent_runtime_resource))
+    error_message = "Use a full projects/*/locations/*/reasoningEngines/* resource name."
+  }
+}
 variable "scheduler_paused" {
   description = "Keep paused until migrations and UI deployment are complete."
   type        = bool
@@ -66,14 +89,38 @@ provider "google" {
   region  = var.platform.region
 }
 locals {
-  app_url         = coalesce(var.app_url, "https://${var.platform.site_id}.web.app")
-  api_secrets     = var.api_secret_versions != null ? var.api_secret_versions : var.secret_versions
-  worker_secrets  = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "ENCRYPTION_KEY", "AQICN_API_TOKEN"], key) }
-  migrate_secrets = { DATABASE_URL = var.secret_versions["DATABASE_URL"] }
+  app_url = coalesce(var.app_url, "https://${var.platform.site_id}.web.app")
+  # Model and agent credentials never reach the API or the device worker.
+  agent_secret_names = ["OPENROUTER_API_KEY", "AGENT_SERVICE_TOKEN"]
+  api_secrets        = { for key, version in(var.api_secret_versions != null ? var.api_secret_versions : var.secret_versions) : key => version if !contains(local.agent_secret_names, key) }
+  worker_secrets     = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "ENCRYPTION_KEY", "AQICN_API_TOKEN"], key) }
+  migrate_secrets    = { DATABASE_URL = var.secret_versions["DATABASE_URL"] }
+  planner_secrets    = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "OPENROUTER_API_KEY"], key) }
+  planner_enabled = var.agent_runtime_resource != "" || var.agent_provider == "gemini" || (
+    var.agent_provider == "openrouter" && contains(keys(var.secret_versions), "OPENROUTER_API_KEY")
+  )
+  agent_env = {
+    AGENT_PROVIDER         = local.planner_enabled ? var.agent_provider : "disabled"
+    AGENT_MODEL            = var.agent_model
+    AGENT_RUNTIME          = var.agent_runtime_resource != "" ? "remote" : "embedded"
+    AGENT_RUNTIME_RESOURCE = var.agent_runtime_resource
+    GOOGLE_CLOUD_PROJECT   = var.platform.project_id
+  }
+  jobs = merge(
+    { worker = "tick", migrate = "migrate" },
+    local.planner_enabled ? { planner = "plan" } : {}
+  )
+  job_secrets = { worker = local.worker_secrets, migrate = local.migrate_secrets, planner = local.planner_secrets }
+  job_env = {
+    worker  = { AUTO_MIGRATE = "false", GOOGLE_CLOUD_PROJECT = var.platform.project_id }
+    migrate = { AUTO_MIGRATE = "false" }
+    planner = merge({ AUTO_MIGRATE = "false" }, local.agent_env)
+  }
   grants = merge(
     { for key, version in local.api_secrets : "api-${key}" => { role = "api", secret = key } },
     { for key, version in local.worker_secrets : "worker-${key}" => { role = "worker", secret = key } },
-    { "migrate-DATABASE_URL" = { role = "migrate", secret = "DATABASE_URL" } }
+    { "migrate-DATABASE_URL" = { role = "migrate", secret = "DATABASE_URL" } },
+    local.planner_enabled ? { for key, version in local.planner_secrets : "planner-${key}" => { role = "planner", secret = key } } : {}
   )
 }
 resource "google_secret_manager_secret_iam_member" "runtime" {
@@ -83,7 +130,7 @@ resource "google_secret_manager_secret_iam_member" "runtime" {
   member    = "serviceAccount:${var.platform.identities[each.value.role]}"
 }
 resource "google_cloud_run_v2_job" "job" {
-  for_each            = { worker = "tick", migrate = "migrate" }
+  for_each            = local.jobs
   name                = "${var.platform.name}-${each.key}"
   location            = var.platform.region
   deletion_protection = false
@@ -98,13 +145,17 @@ resource "google_cloud_run_v2_job" "job" {
         image   = var.image
         command = ["python"]
         args    = ["-m", "climate_control.cli", each.value]
-        resources { limits = { cpu = "1", memory = "512Mi" } }
-        env {
-          name  = "AUTO_MIGRATE"
-          value = "false"
+        # The planner loads the agent framework and model client libraries.
+        resources { limits = { cpu = "1", memory = each.key == "planner" ? "1Gi" : "512Mi" } }
+        dynamic "env" {
+          for_each = local.job_env[each.key]
+          content {
+            name  = env.key
+            value = env.value
+          }
         }
         dynamic "env" {
-          for_each = each.key == "worker" ? local.worker_secrets : local.migrate_secrets
+          for_each = local.job_secrets[each.key]
           content {
             name = env.key
             value_source {
@@ -152,13 +203,17 @@ resource "google_cloud_run_v2_service" "api" {
         http_get { path = "/health/ready" }
       }
       dynamic "env" {
-        for_each = {
+        # Agent settings only describe the planner on the status page; the API never plans.
+        for_each = merge(local.agent_env, local.planner_enabled ? {
+          # Lets ownership changes and review requests start planning immediately.
+          PLANNER_JOB = "projects/${var.platform.project_id}/locations/${var.platform.region}/jobs/${var.platform.name}-planner"
+          } : {}, {
           APP_URL                       = local.app_url
           GOOGLE_ALLOWED_EMAILS         = var.google_allowed_emails
           SCHEDULER_ENABLED             = "false"
           AUTO_MIGRATE                  = "false"
           API_OPERATION_TIMEOUT_SECONDS = "50"
-        }
+        })
         content {
           name  = env.key
           value = env.value
@@ -187,11 +242,20 @@ resource "google_cloud_run_v2_service" "api" {
   depends_on = [google_secret_manager_secret_iam_member.runtime]
 }
 resource "google_cloud_run_v2_job_iam_member" "scheduler" {
+  for_each = toset([for key in ["worker", "planner"] : key if contains(keys(local.jobs), key)])
   project  = var.platform.project_id
   location = var.platform.region
-  name     = google_cloud_run_v2_job.job["worker"].name
+  name     = google_cloud_run_v2_job.job[each.key].name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.platform.identities["scheduler"]}"
+}
+resource "google_cloud_run_v2_job_iam_member" "api_planner" {
+  count    = local.planner_enabled ? 1 : 0
+  project  = var.platform.project_id
+  location = var.platform.region
+  name     = google_cloud_run_v2_job.job["planner"].name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${var.platform.identities["api"]}"
 }
 resource "google_cloud_scheduler_job" "tick" {
   name             = "${var.platform.name}-tick"
@@ -219,11 +283,41 @@ resource "google_cloud_scheduler_job" "tick" {
   }
   depends_on = [google_cloud_run_v2_job_iam_member.scheduler]
 }
+resource "google_cloud_scheduler_job" "plan" {
+  # Planning requests are rare and tolerate minutes of latency; a five-minute cadence
+  # keeps idle job executions cheap.
+  count            = local.planner_enabled ? 1 : 0
+  name             = "${var.platform.name}-plan"
+  region           = var.platform.region
+  schedule         = "*/5 * * * *"
+  time_zone        = "Etc/UTC"
+  paused           = var.scheduler_paused
+  attempt_deadline = "60s"
+  retry_config { retry_count = 0 }
+  http_target {
+    http_method = "POST"
+    uri         = "https://run.googleapis.com/v2/projects/${var.platform.project_id}/locations/${var.platform.region}/jobs/${google_cloud_run_v2_job.job["planner"].name}:run"
+    body        = base64encode("{}")
+    headers     = { "Content-Type" = "application/json" }
+    oauth_token {
+      service_account_email = var.platform.identities["scheduler"]
+      scope                 = "https://www.googleapis.com/auth/cloud-platform"
+    }
+  }
+  lifecycle {
+    precondition {
+      condition     = var.scheduler_paused || var.api_enabled
+      error_message = "Enable the migrated API before unpausing the scheduler."
+    }
+  }
+  depends_on = [google_cloud_run_v2_job_iam_member.scheduler]
+}
 output "project_id" { value = var.platform.project_id }
 output "app_url" { value = local.app_url }
 output "api_url" { value = try(google_cloud_run_v2_service.api[0].uri, null) }
 output "migration_job" { value = google_cloud_run_v2_job.job["migrate"].name }
 output "worker_job" { value = google_cloud_run_v2_job.job["worker"].name }
+output "planner_job" { value = try(google_cloud_run_v2_job.job["planner"].name, null) }
 output "firebase_config" {
   value = {
     hosting = {
@@ -231,7 +325,7 @@ output "firebase_config" {
       public = "frontend/dist"
       ignore = ["firebase.json", "**/.*", "**/node_modules/**"]
       rewrites = concat([
-        for prefix in ["api", "auth", "health"] : {
+        for prefix in ["api", "auth", "health", "mcp"] : {
           source = "/${prefix}{,/**}"
           run    = { serviceId = "${var.platform.name}-api", region = var.platform.region }
         }
@@ -246,7 +340,7 @@ output "firebase_config" {
           { key = "Content-Security-Policy", value = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" }
         ] },
         { source = "/assets/**", headers = [{ key = "Cache-Control", value = "public, max-age=31536000, immutable" }] },
-        { source = "/{api,auth,health}{,/**}", headers = [{ key = "Cache-Control", value = "no-store" }] }
+        { source = "/{api,auth,health,mcp}{,/**}", headers = [{ key = "Cache-Control", value = "no-store" }] }
       ]
     }
   }

@@ -150,13 +150,19 @@ def apply(variables):
     terraform(RUNTIME, "apply", "-input=false", "-auto-approve", f"-var-file={VARIABLES}")
 
 
-def scheduler_command(platform, action):
+SCHEDULES = {
+    "tick": "google_cloud_scheduler_job.tick",
+    "plan": "google_cloud_scheduler_job.plan[0]",
+}
+
+
+def scheduler_command(platform, action, kind="tick"):
     return [
         "gcloud",
         "scheduler",
         "jobs",
         action,
-        f"{platform['name']}-tick",
+        f"{platform['name']}-{kind}",
         "--project",
         platform["project_id"],
         "--location",
@@ -275,7 +281,7 @@ def deploy(*, dry_run=False, emails=""):
                     "steps": [
                         "build UI and backend",
                         "push image and resolve digest",
-                        "pause schedule and drain workers",
+                        "pause schedules and drain workers and planner",
                         "update jobs",
                         "run migrations",
                         "deploy API and check readiness",
@@ -323,17 +329,18 @@ def deploy(*, dry_run=False, emails=""):
     )
     write_json(RUNTIME / "platform.auto.tfvars.json", {"platform": platform})
     write_json(VARIABLES, variables)
-    scheduler_exists = "google_cloud_scheduler_job.tick" in resources
+    schedules = [kind for kind, address in SCHEDULES.items() if address in resources]
     try:
-        if scheduler_exists:
-            print("Pausing schedule and draining workers...", flush=True)
-            run(scheduler_command(platform, "pause"))
-        for kind in ("worker", "migrate"):
+        if schedules:
+            print("Pausing schedules and draining workers...", flush=True)
+            for kind in schedules:
+                run(scheduler_command(platform, "pause", kind))
+        for kind in ("worker", "planner", "migrate"):
             if f'google_cloud_run_v2_job.job["{kind}"]' in resources:
                 drain_job(platform, kind)
-        print("Updating worker and migration jobs...", flush=True)
+        print("Updating worker, planner, and migration jobs...", flush=True)
         apply(variables)
-        scheduler_exists = True
+        schedules = [kind for kind, address in SCHEDULES.items() if address in runtime_state()]
         print("Running database migrations...", flush=True)
         run(
             [
@@ -365,9 +372,10 @@ def deploy(*, dry_run=False, emails=""):
     except BaseException:
         variables["scheduler_paused"] = True
         write_json(VARIABLES, variables)
-        if scheduler_exists:
+        if schedules:
             try:
-                run(scheduler_command(platform, "pause"))
+                for kind in schedules:
+                    run(scheduler_command(platform, "pause", kind))
                 print(
                     "Deployment stopped; polling is paused. Rerun invoke deploy to retry.",
                     flush=True,

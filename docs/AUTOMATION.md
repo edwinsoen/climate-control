@@ -1,6 +1,6 @@
 # Device automation
 
-The deterministic engine runs after collection in each local scheduler cycle or GCP minute `tick`. It evaluates cached observations and uses the poller's account leases, pacing, backoff, and immediate readback. It does not invoke a model; an external planning worker may use the authenticated API below. Migration `0009` creates disabled automation for existing devices, versioned rules, events, and durable planning jobs. New devices also start disabled.
+The deterministic engine runs after collection in each local scheduler cycle or GCP minute `tick`. It evaluates cached observations and uses the poller's account leases, pacing, backoff, and immediate readback. It does not invoke a model. The [in-app planner](AGENT.md) or an external planner proposes rules through the planning protocol below. Migration `0009` creates disabled automation for existing devices, versioned rules, events, and durable planning jobs. New devices also start disabled.
 
 ## User controls and ownership
 
@@ -72,7 +72,7 @@ the current status without creating activity entries.
 
 ## Example for agent authors
 
-This shows syntax, not a recommended pollution policy. Replace the device ID, threshold, fan setting, and timezone with validated household inputs and capabilities.
+Agents should load the rule-engine skill (`src/climate_control/agent/skills/rule-engine`, also served over [MCP](AGENT.md#mcp)). This example shows syntax, not a recommended pollution policy. Replace the device ID, threshold, fan setting, and timezone with validated household inputs and capabilities.
 
 ```json
 {
@@ -112,8 +112,9 @@ Existing rules continue while planning is pending or fails.
 
 ## Authenticated planning protocol
 
-Workers use an authenticated session and `X-CSRF-Token`, like other API clients.
-This release adds no model credentials, model invocation, or new auth scheme.
+Workers use an authenticated session and `X-CSRF-Token`, like other API clients, or
+the equivalent [MCP tools](AGENT.md#mcp) with a `rules`-scoped access token. The in-app
+planner follows the same steps in process.
 
 1. List `/api/devices`; inspect `automation.pending_review`, then fetch
    `/api/devices/{id}/automation` for status and job availability time.
@@ -134,7 +135,8 @@ This release adds no model credentials, model invocation, or new auth scheme.
    `{"request_id":"...","lease_token":"..."}`. Expired/obsolete leases return `409`.
 6. Submit `POST .../automation/jobs/complete` with lease fields, `generation`,
    `base_revision`, `reason`, and `ruleset`. Valid proposals activate atomically
-   only for the claimed agent-owned version. Invalid proposals return `422` and
+   only for the claimed agent-owned version. A ruleset identical to the active one
+   confirms it and schedules the next review without a new revision. Invalid proposals return `422` and
    preserve existing rules. On `409`, discard the obsolete proposal and reread
    context before claiming new work.
 7. If planning fails, send lease fields to `POST .../automation/jobs/fail`.
@@ -154,19 +156,21 @@ Paths are relative to `/api/devices/{id}/automation`; writes require CSRF:
 
 | Method / path | Purpose or body |
 | --- | --- |
-| `GET /` | Ownership, enabled state, revision/generation, pause, rules, latest decision, job |
+| `GET /` | Ownership, enabled state, revision/generation, pause, rules, latest decision, job, latest planner run |
 | `PUT /` | `{owner: "manual" or "agent", enabled, pause_seconds, generation, base_revision}` |
 | `PUT /ruleset` | Manual-only `{ruleset, reason, generation, base_revision}` |
 | `POST /pause` | `{seconds: 3600}`; range 60–86400 |
 | `POST /resume` | Clear pause, preserving ownership and enabled state |
 | `POST /reconsider` | Explicit request in agent mode |
-| `GET /revisions?before=N` | Up to 50 immutable revisions, descending; paginate by revision |
+| `GET /revisions?before=N` | Up to 50 immutable revisions with owner, author, and reason, descending; paginate by revision |
 | `GET /events?before=ID` | Up to 50 events, descending; paginate by ID |
+| `GET /runs?limit=N` | Up to 20 planner runs with their steps, newest first |
 
 Decision changes that require commands or indicate blocked execution record
 inputs/ages, selected rule, desired action, explanation, and inhibition. Already-applied
 and hold decisions update current status without recording events. Dispatch records
-intent and observed outcome separately. UI shows
+intent and observed outcome separately. In-app planning records completed, unchanged,
+or failed runs; manual pauses record the actor. UI shows
 current reason, pause expiry, pending planning, and recent events. Scheduler results
 include `automation_checked`. Events expire after 30 days; ruleset revisions remain
 until device deletion. Deleting a device/account cascades its automation data.

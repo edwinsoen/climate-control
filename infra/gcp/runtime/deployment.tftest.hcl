@@ -10,11 +10,15 @@ variables {
       worker    = "worker@climate-test.iam.gserviceaccount.com"
       migrate   = "migrate@climate-test.iam.gserviceaccount.com"
       scheduler = "scheduler@climate-test.iam.gserviceaccount.com"
+      planner   = "planner@climate-test.iam.gserviceaccount.com"
+      agent     = "agent@climate-test.iam.gserviceaccount.com"
     }
     secret_ids = {
       DATABASE_URL        = "test-database"
       ENCRYPTION_KEY      = "test-encryption"
       ADMIN_PASSWORD_HASH = "test-password"
+      OPENROUTER_API_KEY  = "test-openrouter"
+      AGENT_SERVICE_TOKEN = "test-agent-token"
     }
   }
   image           = "asia-southeast1-docker.pkg.dev/climate-test/app/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -58,14 +62,14 @@ run "active_stage" {
     error_message = "Web service must use request-based billing."
   }
   assert {
-    condition     = output.firebase_config.hosting.rewrites[0].run.serviceId == google_cloud_run_v2_service.api[0].name && output.firebase_config.hosting.rewrites[3].destination == "/index.html"
+    condition     = output.firebase_config.hosting.rewrites[0].run.serviceId == google_cloud_run_v2_service.api[0].name && output.firebase_config.hosting.rewrites[3].source == "/mcp{,/**}" && output.firebase_config.hosting.rewrites[4].destination == "/index.html"
     error_message = "API rewrites must precede the static SPA fallback."
   }
 }
 run "premature_schedule" {
   command = plan
   variables { scheduler_paused = false }
-  expect_failures = [google_cloud_scheduler_job.tick]
+  expect_failures = [google_cloud_scheduler_job.tick, google_cloud_scheduler_job.plan]
 }
 
 run "retain_api_during_migration" {
@@ -83,5 +87,44 @@ run "retain_api_during_migration" {
   assert {
     condition     = one([for env in google_cloud_run_v2_service.api[0].template[0].containers[0].env : env.value_source[0].secret_key_ref[0].version if env.name == "DATABASE_URL"]) == "1" && one([for env in google_cloud_run_v2_job.job["migrate"].template[0].template[0].containers[0].env : env.value_source[0].secret_key_ref[0].version if env.name == "DATABASE_URL"]) == "2"
     error_message = "The API must retain its existing secrets until migrations succeed."
+  }
+}
+
+run "planner_least_privilege" {
+  command = plan
+  variables {
+    api_enabled      = true
+    scheduler_paused = false
+    agent_provider   = "openrouter"
+    secret_versions  = { DATABASE_URL = "1", ENCRYPTION_KEY = "1", ADMIN_PASSWORD_HASH = "1", OPENROUTER_API_KEY = "1", AGENT_SERVICE_TOKEN = "1" }
+  }
+  assert {
+    condition     = toset([for env in google_cloud_run_v2_job.job["planner"].template[0].template[0].containers[0].env : env.name if length(env.value_source) > 0]) == toset(["DATABASE_URL", "OPENROUTER_API_KEY"])
+    error_message = "The planner must receive only the database and model secrets."
+  }
+  assert {
+    condition     = google_cloud_run_v2_job.job["planner"].template[0].template[0].containers[0].args == tolist(["-m", "climate_control.cli", "plan"]) && google_cloud_run_v2_job.job["planner"].template[0].template[0].service_account == var.platform.identities["planner"]
+    error_message = "The planner job must run the plan command as the planner identity."
+  }
+  assert {
+    condition     = length(setintersection(toset([for env in google_cloud_run_v2_service.api[0].template[0].containers[0].env : env.name if length(env.value_source) > 0]), toset(["OPENROUTER_API_KEY", "AGENT_SERVICE_TOKEN"]))) == 0
+    error_message = "The API must not receive model or agent credentials."
+  }
+  assert {
+    condition     = one([for env in google_cloud_run_v2_service.api[0].template[0].containers[0].env : env.value if env.name == "PLANNER_JOB"]) == "projects/climate-test/locations/asia-southeast1/jobs/climate-control-planner" && google_cloud_run_v2_job_iam_member.api_planner[0].member == "serviceAccount:${var.platform.identities["api"]}"
+    error_message = "The API must be able to start planning immediately."
+  }
+  assert {
+    condition     = google_cloud_scheduler_job.plan[0].schedule == "*/5 * * * *"
+    error_message = "Planning runs on a five-minute schedule."
+  }
+}
+
+run "planner_disabled" {
+  command = plan
+  variables { agent_provider = "disabled" }
+  assert {
+    condition     = !contains(keys(google_cloud_run_v2_job.job), "planner") && length(google_cloud_scheduler_job.plan) == 0
+    error_message = "A disabled planner creates no job or schedule."
   }
 }

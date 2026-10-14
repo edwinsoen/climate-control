@@ -2,13 +2,13 @@
 
 ## Architecture
 
-Local `serve` hosts the compiled React UI and FastAPI routes and runs an in-process scheduler. On GCP, Firebase Hosting serves the UI, Cloud Run `serve-api` handles authentication, CRUD, and explicit controls, and a minute-scheduled `tick` Job collects readings, evaluates rules, and prunes expired data. Both modes use the same poller and provider adapter. SQLite supports a single local process; PostgreSQL provides shared state on GCP. Alembic owns schema changes. [Deployment details](DEPLOYMENT.md).
+Local `serve` hosts the compiled React UI and FastAPI routes and runs an in-process scheduler. On GCP, Firebase Hosting serves the UI, Cloud Run `serve-api` handles authentication, CRUD, and explicit controls, a minute-scheduled `tick` Job collects readings, evaluates rules, and prunes expired data, and a five-minute `plan` Job runs the [rule planner](AGENT.md). Both modes use the same poller and provider adapter. SQLite supports a single local process; PostgreSQL provides shared state on GCP. Alembic owns schema changes. [Deployment details](DEPLOYMENT.md).
 
 Normal UI status and history requests read the database. The poller owns provider requests, persistent account leases, pacing, backoff, and snapshot updates. Explicit account actions and device controls use the same protection. The VeSync adapter normalizes supported purifier readings and capabilities; provider-specific connection fields live in `frontend/src/accounts/providers/`.
 
 ## API
 
-All `/api` routes require a session except `GET /api/session` and `POST /api/login`. Mutating routes also require `X-CSRF-Token`; `GET /health/live` and `/health/ready` are public.
+All `/api` routes require a session except `GET /api/session` and `POST /api/login`. Mutating routes also require `X-CSRF-Token`; `GET /health/live` and `/health/ready` are public. `/mcp` accepts only scoped bearer tokens and ignores cookies.
 
 | Route | Purpose |
 | --- | --- |
@@ -22,6 +22,9 @@ All `/api` routes require a session except `GET /api/session` and `POST /api/log
 | `POST /api/outdoor/stations/search`, `POST /api/outdoor/stations/nearby` | AQICN search and browser-location lookup |
 | `PUT/DELETE /api/outdoor/location` | Select or remove the household station |
 | `/api/devices/{id}/automation/*` | [Rules, decisions, and planning](AUTOMATION.md) |
+| `GET/POST /api/access-tokens`, `DELETE /api/access-tokens/{id}` | MCP access tokens; a new token is returned once |
+| `GET /api/agent/status` | Planner provider, mode, and MCP URL |
+| `POST /mcp` | [Agent tools over MCP](AGENT.md#mcp) |
 
 `POST /internal/poll` is available only in combined mode for configured legacy OIDC scheduling. `serve-api` omits it and all background polling. Account writes require `provider` (currently `vesync`), `label`, `email`, `password`, `country_code`, and `time_zone`. Reconnection keeps the provider and email; invalid credentials leave a correctable `auth_error`. Device responses include supported capabilities, controls, cached state, timestamps, staleness, and safe error messages. Unsupported measurements are null. Refresh cooldown returns `429` with `Retry-After`; authentication and request validation use `401`/`403`, conflicts `409`, and invalid input `422`. Credential fields are redacted from errors.
 

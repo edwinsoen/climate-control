@@ -4,6 +4,7 @@ import time
 import httpx
 import pytest
 from conftest import TEST_PASSWORD
+from cryptography.fernet import Fernet
 from pydantic import SecretStr
 from sqlalchemy import select
 from test_automation import setup_rules
@@ -205,9 +206,10 @@ def test_worker_and_migration_configuration_do_not_require_web_credentials(app):
 
 
 def test_tick_failure_is_sanitized_and_exits_nonzero(monkeypatch, caplog):
-    async def fail():
+    async def fail(settings):
         raise RuntimeError("postgresql://secret-password")
 
+    monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.setattr(cli, "run_tick", fail)
     monkeypatch.setattr("sys.argv", ["climate", "tick"])
     with pytest.raises(SystemExit) as result:

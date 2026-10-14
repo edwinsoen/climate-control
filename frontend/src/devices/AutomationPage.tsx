@@ -10,15 +10,27 @@ type Trigger = { id: string; kind: 'above' | 'below' | 'sustained' | 'not_improv
 type Ruleset = { version: 1; timezone: string; rules: Rule[]; fallback: Action; consecutive_readings: number; min_change_seconds: number; review_after_seconds: number; reconsideration_cooldown_seconds: number; triggers: Trigger[] }
 type Summary = { decision?: { rule_id: string | null; explanation: string; action: Action }; inhibition: string | null }
 export type AutomationSummary = { owner: 'manual' | 'agent'; enabled: boolean; paused_until: number; summary: Summary | null; pending_review: boolean }
-type State = AutomationSummary & { generation: number; revision: number; pause_seconds: number; timezone: string; ruleset: Ruleset | null; job: { status: string; reasons: { reason: string }[] } | null }
+type State = AutomationSummary & { generation: number; revision: number; pause_seconds: number; timezone: string; ruleset: Ruleset | null; job: { status: string; reasons: { reason: string }[] } | null; run: Run | null }
+type Step = { at: number; kind: string; name?: string; text?: string; arguments?: string; error?: string }
+type Run = { id: string; status: string; model: string; attempts: number; llm_calls: number; error_kind: string | null; started_at: number; finished_at: number | null; step_count?: number; steps?: Step[] }
 type Device = { id: string; name: string; capabilities: string[]; controls: ControlOptions }
 type Context = State & { devices: Device[] }
-type Event = { id: number; created_at: number; outcome?: string; inhibition?: string; decision?: { explanation: string } }
+type Event = { id: number; created_at: number; outcome?: string; inhibition?: string; planning?: string; decision?: { explanation: string } }
 type Preview = { decision: { explanation: string; action: Action; trace: { rule_id: string; matches: boolean; in_time: boolean }[] }; target_available: boolean; inputs: Record<string, { available: boolean; value: number | null; unit: string; age_seconds: number | null }> }
 type Api = <T>(path: string, options?: RequestInit) => Promise<T>
 
 const metricLabels: Record<string, string> = { pm25: 'PM2.5 (µg/m³)', pm1: 'PM1 (µg/m³)', pm10: 'PM10 (µg/m³)', air_quality: 'Air quality (rank 1–4)', aqi: 'Overall AQI', pm25_aqi: 'PM2.5 AQI', pm10_aqi: 'PM10 AQI' }
+const runLabels: Record<string, string> = { running: 'Working on the rules', completed: 'Updated the rules', unchanged: 'Kept the current rules', superseded: 'Stopped after a manual change', failed: 'Could not produce valid rules' }
+const errorLabels: Record<string, string> = { invalid_proposal: 'Could not produce valid rules', timeout: 'Took too long and was stopped', llm_limit: 'Reached the model call limit', model_error: 'The model returned an error', interrupted: 'Stopped when the app restarted', error: 'Stopped by an unexpected error' }
+const toolLabels: Record<string, string> = { list_devices: 'Listed devices', get_device: 'Read device status', get_device_history: 'Read reading history', get_outdoor_air_quality: 'Read outdoor air quality', get_outdoor_history: 'Read outdoor history', get_rule_schema: 'Read the rule schema', get_device_automation: 'Read device rules and context', list_rule_events: 'Read recent activity', preview_rules: 'Tested a draft ruleset' }
+function stepText(step: Step): string | null {
+  if (step.kind === 'tool') return toolLabels[step.name ?? ''] ?? 'Used ' + step.name
+  if (step.kind === 'result') return step.error ? (toolLabels[step.name ?? ''] ?? step.name) + ' failed: ' + step.error : null
+  if (step.kind === 'rejected') return 'Rules rejected: ' + step.text
+  return step.text ?? null
+}
 const inhibitionLabels: Record<string, string> = { disabled: 'Disabled', paused: 'Paused', waiting_for_rules: 'Waiting for rules', target_unavailable: 'Device unavailable · holding setting', unsupported_action: 'Device capabilities changed', awaiting_confirmation: 'Waiting for confirmation', awaiting_fresh_status: 'Waiting for fresh status', retry_limit: 'Retry limit reached', retry_backoff: 'Retry scheduled', waiting_for_readings: 'Waiting for more readings', minimum_change_interval: 'Waiting between changes', already_applied: 'Setting confirmed', hold: 'Holding setting', manual_pause: 'Paused after manual control' }
+const planningLabels: Record<string, string> = { completed: 'Agent updated rules', unchanged: 'Agent kept rules', failed: 'Agent planning failed · will retry' }
 const outcomeLabels: Record<string, string> = { controlled: 'Setting sent', unconfirmed: 'Setting not confirmed', control_failed: 'Setting failed', temporary: 'Connection failed', offline: 'Device offline', rate_limit: 'Provider requests paused', auth: 'Account needs attention', invalid_control: 'Setting no longer supported' }
 const triggerLabels = { above: 'Threshold crossed upward', below: 'Threshold crossed downward', sustained: 'Sustained high readings', not_improving: 'High readings without improvement', availability: 'Reading availability changes', failures: 'Repeated command failures' }
 const newId = () => crypto.randomUUID()
@@ -73,6 +85,8 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
   const [draft, setDraft] = useState<Ruleset | null>(null)
   const [saved, setSaved] = useState('')
   const [events, setEvents] = useState<Event[]>([])
+  const [steps, setSteps] = useState<Step[]>([])
+  const [activityOpen, setActivityOpen] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -116,25 +130,59 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
     if (error) errorRef.current?.focus()
   }, [error])
 
+  const ownerRef = useRef<State['owner'] | null>(null)
+  ownerRef.current = state?.owner ?? null
+
   useEffect(() => {
     let cancelled = false
-    const refresh = () => {
-      if (document.hidden) return
-      void api<Event[]>(path + '/events').then(value => { if (!cancelled) setEvents(value) }).catch(() => {})
-      void api<State>(path).then(value => {
-        if (cancelled) return
-        const loaded = loadedVersion.current
-        if (loaded && (value.revision > loaded.revision || value.generation > loaded.generation)) setOutdated(true)
-        setState(current => {
-          if (!current) return current
-          return { ...current, summary: value.summary, paused_until: value.paused_until, job: value.job }
-        })
-      }).catch(() => {})
+    let timer = 0
+    const refresh = async () => {
+      let pendingReview = false
+      if (!document.hidden) {
+        void api<Event[]>(path + '/events').then(value => { if (!cancelled) setEvents(value) }).catch(() => {})
+        try {
+          const value = await api<State>(path)
+          if (cancelled) return
+          pendingReview = value.owner === 'agent' && ['pending', 'claimed'].includes(value.job?.status ?? '')
+          const loaded = loadedVersion.current
+          if (loaded && (value.revision > loaded.revision || value.generation > loaded.generation)) {
+            // Agent-managed rules are read-only here, so load the agent's revision directly.
+            if (value.owner === 'agent' && ownerRef.current === 'agent') {
+              const context = await api<Context>(path + '/context')
+              if (!cancelled) acceptContext(context)
+            } else setOutdated(true)
+          }
+          setState(current => current && { ...current, summary: value.summary, paused_until: value.paused_until, job: value.job, run: value.run })
+        } catch { /* keep the last loaded state */ }
+      }
+      // Check often while the agent is planning; otherwise every 15 seconds.
+      if (!cancelled) timer = window.setTimeout(() => void refresh(), pendingReview ? 3000 : 15000)
     }
-    refresh()
-    const timer = window.setInterval(refresh, 15000)
-    return () => { cancelled = true; window.clearInterval(timer) }
+    void refresh()
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [path, api])
+
+  const run = state?.run ?? null
+  const running = run?.status === 'running'
+
+  useEffect(() => {
+    if (running) setActivityOpen(true)
+  }, [running, run?.id])
+
+  useEffect(() => {
+    if (!activityOpen && !running) return
+    let cancelled = false
+    let timer = 0
+    const load = async () => {
+      try {
+        const [latest] = await api<Run[]>(path + '/runs?limit=1')
+        if (!cancelled) setSteps(latest?.steps ?? [])
+      } catch { /* keep the steps already shown */ }
+      if (!cancelled && running) timer = window.setTimeout(() => void load(), 3000)
+    }
+    void load()
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [path, api, activityOpen, running, run?.id, run?.step_count])
 
   async function perform(task: () => Promise<void>) {
     setBusy(true); setError(''); setNotice('')
@@ -197,7 +245,11 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
           {readonly && <p className="alert notice">Agent-managed. Switch to manual to edit.</p>}
           <fieldset disabled={busy || readonly || outdated} className="automation-form">
             <div className="rules-section-heading"><div><h2>Rules</h2><p className="subtle">First matching rule applies.</p></div><button type="button" className="button small" data-testid="rule-add" onClick={addRule}>+ Add rule</button></div>
-            {!draft.rules.length && <div className="rules-empty"><p>No rules</p></div>}
+            {!draft.rules.length && <div className="rules-empty">
+              {readonly && (running || pending)
+                ? <p data-testid="automation-working">Agent is preparing the first rules…</p>
+                : <p>No rules</p>}
+            </div>}
             {draft.rules.map((rule, index) => <fieldset className="automation-rule" key={rule.id} data-testid="automation-rule">
               <legend>Rule {index + 1}</legend>
               <div className="rule-heading"><label>Rule name<input data-testid="rule-explanation" value={rule.explanation} placeholder="High indoor PM2.5" onChange={e => changeRule(index, { ...rule, explanation: e.target.value })} /></label>
@@ -308,7 +360,21 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
               <ul>{Object.entries(preview.inputs).map(([key, input]) => { const [kind, id, metric] = key.split(':'); const name = kind === 'outdoor' ? 'Outdoor station' : devices.find(d => d.id === id)?.name ?? 'Unavailable device'; return <li key={key}>{name} · {metricLabels[metric] ?? metric}: {input.available ? String(input.value) + ' ' + input.unit : 'unavailable'}</li> })}</ul>
             </div>}
           </section>
-          <details className="rules-panel"><summary>Recent activity</summary><button className="text-button" onClick={() => void perform(async () => setEvents(await api<Event[]>(path + '/events')))}>Refresh activity</button><ul className="rules-events" data-testid="automation-events">{events.map(event => <li key={event.id}><time>{new Date(event.created_at * 1000).toLocaleString()}</time>{event.outcome ? outcomeLabels[event.outcome] ?? 'Setting update' : event.decision?.explanation ?? (event.inhibition ? inhibitionLabels[event.inhibition] : 'Setting requested')}</li>)}</ul></details>
+          <details className="rules-panel agent-activity" data-testid="agent-activity" open={activityOpen}
+            onToggle={event => setActivityOpen(event.currentTarget.open)}>
+            <summary>{running ? 'What the agent is doing' : 'How the agent worked'}</summary>
+            {!run && <p className="rule-hint">The agent has not run for this device yet.</p>}
+            {run && <>
+              <p data-testid="agent-run-status">{run.status === 'failed' ? (errorLabels[run.error_kind ?? ''] ?? runLabels.failed) : runLabels[run.status] ?? run.status}</p>
+              <p className="subtle">{run.model} · {run.llm_calls} model call{run.llm_calls === 1 ? '' : 's'}{run.finished_at ? ' · ' + Math.max(1, Math.round(run.finished_at - run.started_at)) + 's' : ''}</p>
+              <ol className="agent-steps" data-testid="agent-steps">
+                {steps.map(step => [step, stepText(step)] as const).filter(([, text]) => text)
+                  .map(([step, text], index) => <li key={index} className={'agent-step ' + step.kind}>{text}</li>)}
+              </ol>
+              {running && !steps.length && <p className="rule-hint">Reading this device's data…</p>}
+            </>}
+          </details>
+          <details className="rules-panel"><summary>Recent activity</summary><button className="text-button" onClick={() => void perform(async () => setEvents(await api<Event[]>(path + '/events')))}>Refresh activity</button><ul className="rules-events" data-testid="automation-events">{events.map(event => <li key={event.id}><time>{new Date(event.created_at * 1000).toLocaleString()}</time>{event.planning ? planningLabels[event.planning] ?? 'Agent planning' : event.outcome ? outcomeLabels[event.outcome] ?? 'Setting update' : event.decision?.explanation ?? (event.inhibition ? inhibitionLabels[event.inhibition] : 'Setting requested')}</li>)}</ul></details>
         </aside>
       </div>
     </>}

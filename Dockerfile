@@ -10,7 +10,8 @@ WORKDIR /app
 RUN pip install --no-cache-dir uv==0.10.7
 COPY pyproject.toml uv.lock LICENSE ./
 COPY src ./src
-RUN uv sync --frozen --no-dev --no-editable
+# agent-runtime lets the planning job query a planner deployed on Agent Runtime.
+RUN uv sync --frozen --no-dev --no-editable --extra agent-runtime
 
 FROM python:3.12-slim AS backend
 RUN groupadd --gid 10001 climate && useradd --uid 10001 --gid climate --create-home climate
