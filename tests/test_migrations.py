@@ -51,6 +51,10 @@ def test_provider_migration_preserves_existing_accounts(tmp_path):
         assert account["next_poll_at"] == 123
         assert account["next_control_at"] == 0
         assert connection.execute(text("SELECT controls FROM devices")).scalar_one() == "{}"
+        assert connection.execute(text("SELECT display_mode FROM devices")).scalar_one() == "manual"
+        assert (
+            connection.execute(text("SELECT warning_threshold FROM devices")).scalar_one() is None
+        )
         assert connection.execute(text("SELECT id FROM devices")).scalar_one() == "existing-device"
         automation = connection.execute(text("SELECT * FROM device_automation")).mappings().one()
         assert automation["device_id"] == "existing-device"

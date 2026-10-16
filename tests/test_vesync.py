@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from pyvesync.auth import VeSyncAuth
+from pyvesync.const import DeviceStatus
 from pyvesync.models.vesync_models import ResponseDeviceListModel
 from pyvesync.utils.errors import ErrorTypes, ResponseInfo
 from pyvesync.utils.helpers import Helpers
@@ -85,7 +86,13 @@ def test_real_library_model_mapping(model):
     assert snapshot.state["power"] == "on"
     assert snapshot.state["fan_level"] == 2
     assert snapshot.state["filter_life"] == 86
+    assert "display" in snapshot.capabilities
+    assert snapshot.controls["display"] is True
     assert snapshot.retrieved_at > time.time() - 2
+    if model == "Core200S":
+        assert snapshot.controls["display_modes"] == ["manual"]
+    else:
+        assert snapshot.controls["display_modes"] == ["manual", "warnings_only"]
     if model in {"Core200S", "LV-PUR131S", "LV-RH131S"}:
         assert "pm25" not in snapshot.capabilities
         assert snapshot.state["pm25"] is None
@@ -378,6 +385,8 @@ async def test_token_reauthentication_rebuilds_cached_manager_attributes(monkeyp
         DeviceCommand(mode="auto"),
         DeviceCommand(mode="sleep"),
         DeviceCommand(fan_level=4),
+        DeviceCommand(display=False),
+        DeviceCommand(display=True),
     ],
 )
 async def test_real_core_control_requests_and_readback(command):
@@ -385,6 +394,7 @@ async def test_real_core_control_requests_and_readback(command):
     manager.set_credentials("token", "account", "US", "US")
     details = {
         "enabled": True,
+        "display": not command.display if command.display is not None else True,
         "filter_life": 86,
         "mode": "manual",
         "level": 2,
@@ -406,6 +416,8 @@ async def test_real_core_control_requests_and_readback(command):
             details["mode"] = payload["data"]["mode"]
         elif payload["method"] == "setLevel":
             details.update(mode="manual", level=payload["data"]["level"])
+        elif payload["method"] == "setDisplay":
+            details["display"] = payload["data"]["state"]
         return {"code": 0, "result": {"code": 0, "result": dict(details)}}, 200
 
     manager.get_devices = get_devices
@@ -422,6 +434,73 @@ async def test_real_core_control_requests_and_readback(command):
         assert state["mode"] == command.mode
     if command.fan_level is not None:
         assert state["fan_level"] == 4 and state["mode"] == "manual"
+    if command.display is not None:
+        assert requests[1]["method"] == "setDisplay"
+        assert requests[1]["data"]["state"] is command.display
+        assert state["display"] == ("on" if command.display else "off")
+        assert result.control_confirmed is True
+
+
+async def test_vital_display_control_bypasses_library_short_circuit():
+    manager = manager_with(["LAP-V201S-WUS"])
+    manager.set_credentials("token", "account", "US", "US")
+    details = {
+        "powerSwitch": 1,
+        "filterLifePercent": 90,
+        "workMode": "manual",
+        "manualSpeedLevel": 2,
+        "fanSpeedLevel": 2,
+        "AQLevel": 1,
+        "PM25": 4,
+        "screenState": 1,
+        "childLockSwitch": 0,
+        "screenSwitch": 0,
+        "lightDetectionSwitch": 1,
+        "environmentLightState": 0,
+        "scheduleCount": 0,
+        "timerRemain": 0,
+        "efficientModeTimeRemain": 0,
+        "errorCode": 0,
+    }
+    requests = []
+
+    async def get_devices():
+        return True
+
+    async def call_api(endpoint, method, body, *args, **kwargs):
+        payload = body.to_dict()["payload"]
+        requests.append(payload)
+        if payload["method"] == "setDisplay":
+            flag = payload["data"]["screenSwitch"]
+            details.update(screenState=flag, screenSwitch=flag)
+        return {"code": 0, "result": {"code": 0, "result": dict(details)}}, 200
+
+    manager.get_devices = get_devices
+    manager.async_call_api = call_api
+    result = await VeSyncProvider().apply_control(
+        manager, "cid-0", DeviceCommand(display=False)
+    )
+    assert [req["method"] for req in requests] == [
+        "getPurifierStatus",
+        "setDisplay",
+        "getPurifierStatus",
+    ]
+    assert result.devices[0].state["display"] == "off"
+    assert result.control_confirmed is True
+
+    # If live status already matches target display, apply_control short-circuits before setDisplay.
+    requests.clear()
+    noop = await VeSyncProvider().apply_control(
+        manager, "cid-0", DeviceCommand(display=False)
+    )
+    assert [req["method"] for req in requests] == ["getPurifierStatus"]
+    assert noop.control_confirmed is True
+
+    # display_state falls back to display_set_status when display_status is UNKNOWN.
+    device = manager.devices.air_purifiers[0]
+    device.state.display_status = DeviceStatus.UNKNOWN
+    device.state.display_set_status = DeviceStatus.ON
+    assert normalize(device).state["display"] == "on"
 
 
 @pytest.mark.parametrize("failure", ["rejected", "offline"])

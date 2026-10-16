@@ -54,11 +54,14 @@ class FakeProvider:
                         "pm25",
                         "filter_life",
                         "air_quality",
+                        "display",
                     ],
                     controls={
                         "power": True,
                         "modes": ["auto", "sleep"],
                         "fan_levels": [1, 2, 3, 4],
+                        "display": True,
+                        "display_modes": ["manual", "warnings_only"],
                     },
                     state={
                         "connectivity": "online",
@@ -68,6 +71,7 @@ class FakeProvider:
                         "pm25": 8,
                         "filter_life": 86,
                         "air_quality": "good",
+                        "display": "on",
                         **self.states.get(credentials["email"], {}),
                     },
                     retrieved_at=time.time(),
@@ -95,6 +99,8 @@ class FakeProvider:
             state["mode"] = command.mode
         if command.fan_level is not None:
             state.update(mode="manual", fan_level=command.fan_level)
+        if command.display is not None:
+            state["display"] = "on" if command.display else "off"
         return self.snapshot(credentials)
 
     async def status(self, credentials, tokens, provider_id):

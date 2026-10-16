@@ -19,12 +19,18 @@ from climate_control import automation_api as rules_api
 from climate_control.agent.planner import PLANNER_TOOLS
 from climate_control.api import (
     ControlInput,
+    DeviceDisplaySettingsInput,
+    GlobalDisplaySettingsInput,
     control,
     device_history_view,
     devices_view,
+    get_display_settings_view,
     refresh_status,
+    update_device_display_settings,
+    update_global_display_settings,
 )
 from climate_control.automation_api import AgentProposal, Configuration, JobLease, Pause, Proposal
+from climate_control.display import DisplaySelection, WarningThresholdId
 from climate_control.outdoor import outdoor_view
 from climate_control.rules import Ruleset
 
@@ -236,6 +242,12 @@ def preview_rules(ctx: ToolContext, device_id: str, ruleset: dict) -> dict:
     return rules_api.preview_rules(ctx, device_id, Ruleset.model_validate(ruleset))
 
 
+@tool("read")
+def get_display_settings(ctx: ToolContext) -> dict:
+    """Get the global air quality warning threshold and available WHO threshold presets."""
+    return get_display_settings_view(ctx)
+
+
 # Control tools
 
 
@@ -271,6 +283,54 @@ async def set_device_mode(ctx: ToolContext, device_id: str, mode: Literal["auto"
 async def refresh_device_status(ctx: ToolContext, device_id: str) -> dict:
     """Read a device's current status from its provider now, respecting provider pacing."""
     return await refresh_status(ctx, device_id)
+
+
+@tool("control", writes=True)
+async def set_device_display(
+    ctx: ToolContext,
+    device_id: str,
+    mode: DisplaySelection,
+) -> dict:
+    """Control a device's display (`on`, `off`) or set its display mode (`manual`, `warnings_only`).
+
+    `on` and `off` switch the display mode to `manual` and only send a provider command if the
+    physical display is not already in that state (the device must be on). `manual` stops
+    `warnings_only` without toggling the physical display. `warnings_only` evaluates and
+    actuates on new device readings. Does not pause automation rules.
+    """
+    return await update_device_display_settings(
+        ctx, device_id, DeviceDisplaySettingsInput(mode=mode)
+    )
+
+
+@tool("control", writes=True)
+async def set_display_warning_threshold(
+    ctx: ToolContext,
+    warning_threshold: WarningThresholdId | None = None,
+    device_id: str | None = None,
+) -> dict:
+    """Set the WHO warning threshold for `warnings_only` display mode.
+
+    Omit `device_id` to set the global threshold (`who_2021_annual`, `who_2021_24h`,
+    `who_2005_annual`, or `who_2005_24h`). Pass `device_id` to set a per-device override,
+    or pass `warning_threshold=None` with `device_id` to clear the device override.
+    """
+    if device_id is None:
+        if warning_threshold is None:
+            raise ToolError(
+                "invalid",
+                "Provide a warning_threshold when updating the global display setting.",
+            )
+        return await asyncio.to_thread(
+            update_global_display_settings,
+            ctx,
+            GlobalDisplaySettingsInput(warning_threshold=warning_threshold),
+        )
+    return await update_device_display_settings(
+        ctx,
+        device_id,
+        DeviceDisplaySettingsInput(warning_threshold=warning_threshold),
+    )
 
 
 # Rule tools

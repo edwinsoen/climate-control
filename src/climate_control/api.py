@@ -25,6 +25,14 @@ from sqlalchemy.exc import IntegrityError
 from starlette.responses import RedirectResponse
 
 from climate_control.db import Account, Device, LoginSession, LoginThrottle, OAuthFlow, now
+from climate_control.display import (
+    DisplaySelection,
+    WarningThresholdId,
+    device_display_view,
+    display_settings_view,
+    global_warning_threshold,
+    set_global_warning_threshold,
+)
 from climate_control.history import history_view
 from climate_control.outdoor import (
     OutdoorBusy,
@@ -451,6 +459,7 @@ def device_view(device: Device, account: Account, ctx) -> dict:
     with ctx.sessions() as db:
         automation = db.get(Automation, device.id)
         job = db.get(PlanningJob, device.id)
+        global_threshold = global_warning_threshold(db)
         automation_view = (
             {
                 "owner": automation.owner,
@@ -482,6 +491,7 @@ def device_view(device: Device, account: Account, ctx) -> dict:
         and not (account.status == "rate_limited" and account.next_poll_at > current),
         "control_retry_at": timestamp(account.next_control_at),
         "state": device.state,
+        "display": device_display_view(device, global_threshold),
         "retrieved_at": timestamp(device.retrieved_at),
         "stale": device.retrieved_at is None or current - device.retrieved_at > stale_after,
         "error": device.error or account.error,
@@ -493,11 +503,18 @@ class ControlInput(BaseModel):
     power: StrictBool | None = None
     mode: Literal["auto", "sleep"] | None = None
     fan_level: StrictInt | None = None
+    display: StrictBool | None = None
 
     @model_validator(mode="after")
     def one_control(self):
-        if sum(value is not None for value in (self.power, self.mode, self.fan_level)) != 1:
-            raise ValueError("Choose one power, mode, or fan-level change.")
+        if (
+            sum(
+                value is not None
+                for value in (self.power, self.mode, self.fan_level, self.display)
+            )
+            != 1
+        ):
+            raise ValueError("Choose one power, mode, fan-level, or display change.")
         return self
 
 
@@ -507,7 +524,13 @@ async def control_device(device_id: str, payload: ControlInput, request: Request
 
 
 async def control(ctx, device_id: str, payload: ControlInput, actor: str):
-    """Direct control shared by the UI and agent tools; it pauses rules first."""
+    """Direct control shared by the UI and agent tools; power/mode/fan changes pause rules."""
+    if payload.display is not None:
+        return await update_device_display_settings(
+            ctx,
+            device_id,
+            DeviceDisplaySettingsInput(mode="on" if payload.display else "off"),
+        )
     with ctx.sessions() as db:
         device = db.get(Device, device_id)
         if device is None:
@@ -537,6 +560,106 @@ async def control(ctx, device_id: str, payload: ControlInput, actor: str):
     result = await bounded_operation(
         ctx, ctx.poller.queued_control(device_id, DeviceCommand(**payload.model_dump()))
     )
+    return control_response(device_id, result, ctx)
+
+
+class GlobalDisplaySettingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    warning_threshold: WarningThresholdId
+
+
+class DeviceDisplaySettingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: DisplaySelection | None = None
+    warning_threshold: WarningThresholdId | None = None
+
+    @model_validator(mode="after")
+    def has_change(self):
+        if not self.model_fields_set:
+            raise ValueError("Specify a display mode or warning threshold change.")
+        if "mode" in self.model_fields_set and self.mode is None:
+            raise ValueError("Display mode cannot be null.")
+        return self
+
+
+@router.get("/api/display-settings", dependencies=[Depends(authenticated)])
+def get_display_settings_route(request: Request):
+    return get_display_settings_view(request.app.state)
+
+
+def get_display_settings_view(ctx) -> dict:
+    with ctx.sessions() as db:
+        return display_settings_view(db)
+
+
+@router.put("/api/display-settings", dependencies=[Depends(authenticated)])
+def put_display_settings_route(payload: GlobalDisplaySettingsInput, request: Request):
+    return update_global_display_settings(request.app.state, payload)
+
+
+def update_global_display_settings(ctx, payload: GlobalDisplaySettingsInput) -> dict:
+    with ctx.sessions() as db:
+        set_global_warning_threshold(db, payload.warning_threshold)
+        return display_settings_view(db)
+
+
+@router.put("/api/devices/{device_id}/display-settings", dependencies=[Depends(authenticated)])
+async def put_device_display_settings_route(
+    device_id: str, payload: DeviceDisplaySettingsInput, request: Request
+):
+    return await update_device_display_settings(request.app.state, device_id, payload)
+
+
+async def update_device_display_settings(
+    ctx, device_id: str, payload: DeviceDisplaySettingsInput
+) -> dict:
+    with ctx.sessions() as db:
+        device = db.get(Device, device_id)
+        if device is None:
+            raise HTTPException(404, "Device not found.")
+        account = db.get(Account, device.account_id)
+        options = device.controls or {}
+        if not device.supported or account.provider != "vesync" or not options.get("display"):
+            raise HTTPException(422, "This control is not supported by the device.")
+        supported_modes = options.get("display_modes", ["manual"])
+        if payload.mode == "warnings_only" and "warnings_only" not in supported_modes:
+            raise HTTPException(422, "This display mode is not supported by the device.")
+        if (
+            "warning_threshold" in payload.model_fields_set
+            and payload.warning_threshold is not None
+            and "warnings_only" not in supported_modes
+        ):
+            raise HTTPException(422, "This device does not support air quality display warnings.")
+        needs_control = (
+            payload.mode in {"on", "off"}
+            and device.state.get("display") != payload.mode
+        )
+        if needs_control:
+            if device.state.get("connectivity") == "offline":
+                raise HTTPException(409, "This device is offline.")
+            if device.state.get("power") != "on":
+                raise HTTPException(409, "Turn on the device first.")
+        else:
+            if "warning_threshold" in payload.model_fields_set:
+                device.warning_threshold = payload.warning_threshold
+            if "mode" in payload.model_fields_set:
+                device.display_mode = (
+                    "warnings_only" if payload.mode == "warnings_only" else "manual"
+                )
+            db.commit()
+            return {
+                **device_view(device, account, ctx),
+                "control_confirmed": True,
+            }
+    result = await bounded_operation(
+        ctx,
+        ctx.poller.queued_control(device_id, DeviceCommand(display=payload.mode == "on")),
+    )
+    if "warning_threshold" in payload.model_fields_set and result.status == "controlled":
+        with ctx.sessions() as db:
+            if (device := db.get(Device, device_id)) is not None:
+                device.warning_threshold = payload.warning_threshold
+                db.commit()
     return control_response(device_id, result, ctx)
 
 

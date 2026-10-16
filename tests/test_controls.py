@@ -240,3 +240,90 @@ async def test_removed_account_cannot_be_recreated_by_command(
     assert response.status_code == 404
     with app.state.sessions() as db:
         assert not list(db.scalars(select(Device)))
+
+
+async def test_display_control_and_settings_skip_provider_when_unchanged_and_keep_rules_active(
+    app, signed_client, controlled_device
+):
+    from test_automation import setup_rules
+
+    device_id = controlled_device["id"]
+    rules_path = await setup_rules(signed_client, controlled_device)
+    assert controlled_device["state"]["display"] == "on"
+    assert controlled_device["display"] == {
+        "state": "on",
+        "mode": "manual",
+        "warning_threshold": None,
+        "effective_warning_threshold": "who_2021_24h",
+    }
+
+    # Setting display to "on" when already "on" sends no provider command.
+    same = await signed_client.post(f"/api/devices/{device_id}/control", json={"display": True})
+    assert same.status_code == 200
+    assert same.json()["display"]["mode"] == "manual"
+    assert not app.state.poller.provider.control_calls
+
+    # Turning display off sends a provider command without pausing automation rules.
+    turned_off = await signed_client.post(
+        f"/api/devices/{device_id}/control", json={"display": False}
+    )
+    assert turned_off.status_code == 200
+    assert turned_off.json()["state"]["display"] == "off"
+    assert turned_off.json()["display"]["mode"] == "manual"
+    assert len(app.state.poller.provider.control_calls) == 1
+    assert app.state.poller.provider.control_calls[-1][-1] == DeviceCommand(display=False)
+    assert (await signed_client.get(rules_path)).json()["paused_until"] == 0
+
+    # Global and device display settings R/W make no provider calls for warnings_only / thresholds.
+    global_settings = await signed_client.get("/api/display-settings")
+    assert global_settings.status_code == 200
+    assert global_settings.json()["warning_threshold"] == "who_2021_24h"
+    assert len(global_settings.json()["thresholds"]) == 4
+
+    updated_global = await signed_client.put(
+        "/api/display-settings", json={"warning_threshold": "who_2021_annual"}
+    )
+    assert updated_global.status_code == 200
+    assert updated_global.json()["warning_threshold"] == "who_2021_annual"
+
+    warnings_mode = await signed_client.put(
+        f"/api/devices/{device_id}/display-settings",
+        json={"mode": "warnings_only", "warning_threshold": "who_2005_24h"},
+    )
+    assert warnings_mode.status_code == 200
+    assert warnings_mode.json()["display"] == {
+        "state": "off",
+        "mode": "warnings_only",
+        "warning_threshold": "who_2005_24h",
+        "effective_warning_threshold": "who_2005_24h",
+    }
+    assert len(app.state.poller.provider.control_calls) == 1
+
+    cleared = await signed_client.put(
+        f"/api/devices/{device_id}/display-settings",
+        json={"warning_threshold": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["display"] == {
+        "state": "off",
+        "mode": "warnings_only",
+        "warning_threshold": None,
+        "effective_warning_threshold": "who_2021_annual",
+    }
+
+    # Sensorless purifiers reject warnings_only and warning_threshold overrides.
+    with app.state.sessions() as db:
+        device = db.get(Device, device_id)
+        device.controls = {**device.controls, "display_modes": ["manual"]}
+        db.commit()
+    assert (
+        await signed_client.put(
+            f"/api/devices/{device_id}/display-settings", json={"mode": "warnings_only"}
+        )
+    ).status_code == 422
+    assert (
+        await signed_client.put(
+            f"/api/devices/{device_id}/display-settings",
+            json={"warning_threshold": "who_2021_24h"},
+        )
+    ).status_code == 422

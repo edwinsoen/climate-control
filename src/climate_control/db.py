@@ -55,8 +55,20 @@ class Device(Base):
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
     controls: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     state: Mapped[dict] = mapped_column(JSON, default=dict)
+    display_mode: Mapped[str] = mapped_column(
+        String(20), default="manual", server_default="manual"
+    )
+    warning_threshold: Mapped[str | None] = mapped_column(String(30), nullable=True)
     retrieved_at: Mapped[float | None] = mapped_column(nullable=True)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class DisplayConfiguration(Base):
+    __tablename__ = "display_configuration"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    warning_threshold: Mapped[str] = mapped_column(
+        String(30), default="who_2021_24h", server_default="who_2021_24h"
+    )
 
 
 class DeviceReading(Base):
