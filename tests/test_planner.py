@@ -286,7 +286,7 @@ async def test_remote_session_reads_final_text_and_usage():
 
 def test_planner_reads_everything_except_revision_history():
     reads = {name for name, spec in TOOLS.items() if spec.scope == "read"}
-    assert set(PLANNER_TOOLS) == reads - {"list_rule_revisions"}
+    assert set(PLANNER_TOOLS) == reads - {"list_rule_revisions", "get_display_settings"}
 
 
 async def test_deleted_rules_are_planned_fresh_without_history(

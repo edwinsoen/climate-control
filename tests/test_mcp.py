@@ -104,6 +104,10 @@ async def test_read_scope_tools_and_skill(mcp_client, controlled_device):
     assert by_name["set_device_power"]["annotations"]["destructiveHint"] is True
     devices = await call(mcp_client, token, "list_devices")
     assert devices[0]["id"] == controlled_device["id"]
+    assert devices[0]["state"]["display"] == "on"
+    assert devices[0]["display"]["effective_warning_threshold"] == "who_2021_24h"
+    display_settings = await call(mcp_client, token, "get_display_settings")
+    assert display_settings["warning_threshold"] == "who_2021_24h"
     context = await call(
         mcp_client, token, "get_device_automation", device_id=controlled_device["id"]
     )
@@ -147,6 +151,46 @@ async def test_control_tool_pauses_rules_with_token_actor(app, mcp_client, contr
     assert state["paused_until"] > time.time()
     events = (await mcp_client.get(path + "/events")).json()
     assert events[0]["actor"] == "token:home-assistant"
+
+    # Display control and warning threshold tools work with control scope without pausing rules.
+    global_updated = await call(
+        mcp_client,
+        token,
+        "set_display_warning_threshold",
+        warning_threshold="who_2021_annual",
+    )
+    assert global_updated["warning_threshold"] == "who_2021_annual"
+    device_updated = await call(
+        mcp_client,
+        token,
+        "set_device_display",
+        device_id=controlled_device["id"],
+        mode="warnings_only",
+    )
+    assert device_updated["display"] == {
+        "state": "on",
+        "mode": "warnings_only",
+        "warning_threshold": None,
+        "effective_warning_threshold": "who_2021_annual",
+    }
+    override_updated = await call(
+        mcp_client,
+        token,
+        "set_display_warning_threshold",
+        device_id=controlled_device["id"],
+        warning_threshold="who_2005_24h",
+    )
+    assert override_updated["display"]["warning_threshold"] == "who_2005_24h"
+    assert override_updated["display"]["effective_warning_threshold"] == "who_2005_24h"
+    override_cleared = await call(
+        mcp_client,
+        token,
+        "set_display_warning_threshold",
+        device_id=controlled_device["id"],
+        warning_threshold=None,
+    )
+    assert override_cleared["display"]["warning_threshold"] is None
+    assert override_cleared["display"]["effective_warning_threshold"] == "who_2021_annual"
 
 
 async def test_rule_tools_follow_ownership_and_planning_protocol(

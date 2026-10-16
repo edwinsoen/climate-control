@@ -6,7 +6,7 @@ from email.utils import parsedate_to_datetime
 
 import aiohttp
 from pyvesync import VeSync
-from pyvesync.const import PurifierFeatures
+from pyvesync.const import DeviceStatus, PurifierFeatures
 from pyvesync.device_map import get_device_config
 from pyvesync.utils.errors import (
     ErrorTypes,
@@ -93,7 +93,7 @@ class RequestPacer:
 
 
 def capabilities(device) -> list[str]:
-    result = ["power", "mode", "fan_level", "filter_life"]
+    result = ["power", "mode", "fan_level", "filter_life", "display"]
     features = device.features
     if PurifierFeatures.AIR_QUALITY in features:
         result.append("air_quality")
@@ -113,6 +113,16 @@ def capabilities(device) -> list[str]:
     return result
 
 
+def display_state(device) -> str | None:
+    for attr in ("display_status", "display_set_status"):
+        raw = getattr(device.state, attr, None)
+        if isinstance(raw, bool):
+            return "on" if raw else "off"
+        if raw is not None and str(raw).lower() in {"on", "off"}:
+            return str(raw).lower()
+    return None
+
+
 def normalize(device) -> DeviceSnapshot:
     state = device.state
     supported = capabilities(device)
@@ -125,6 +135,7 @@ def normalize(device) -> DeviceSnapshot:
         "fan_level": selected_fan_level(device),
         "reported_fan_level": state.fan_level,
         "filter_life": state.filter_life,
+        "display": display_state(device) if "display" in supported else None,
         "air_quality": state.air_quality_string if "air_quality" in supported else None,
         "pm25": state.pm25 if "pm25" in supported else None,
         "pm1": state.pm1 if "pm1" in supported else None,
@@ -138,7 +149,7 @@ def normalize(device) -> DeviceSnapshot:
         name=device.device_name,
         model=config.model_name if config else device.device_type,
         capabilities=supported,
-        controls=control_options(device),
+        controls=control_options(device, supported),
         state=normalized,
         retrieved_at=time.time(),
     )
@@ -151,7 +162,13 @@ def selected_fan_level(device):
     return device.state.fan_level
 
 
-def control_options(device) -> dict:
+def control_options(device, supported: list[str] | None = None) -> dict:
+    if supported is None:
+        supported = capabilities(device)
+    has_warning_sensor = any(
+        metric in supported for metric in ("pm25", "pm10", "air_quality")
+    )
+    display_modes = ["manual", *(["warnings_only"] if has_warning_sensor else [])]
     return {
         "power": True,
         "modes": [str(mode) for mode in getattr(device, "modes", []) if mode in {"auto", "sleep"}],
@@ -160,6 +177,8 @@ def control_options(device) -> dict:
             for level in getattr(device, "fan_levels", [])
             if isinstance(level, int) and not isinstance(level, bool) and level > 0
         ],
+        "display": "display" in supported,
+        "display_modes": display_modes if "display" in supported else [],
     }
 
 
@@ -300,6 +319,8 @@ class VeSyncProvider:
         device.last_response = None
         device.state.fan_level = None
         device.state.mode = "unknown"
+        device.state.display_status = None
+        device.state.display_set_status = None
         await device.update()
         self.check_response(device)
         if device.state.fan_level is None or str(device.state.mode) == "unknown":
@@ -316,19 +337,35 @@ class VeSyncProvider:
             raise ProviderError("invalid_control")
         if command.fan_level is not None and command.fan_level not in options["fan_levels"]:
             raise ProviderError("invalid_control")
+        if command.display is not None and not options.get("display"):
+            raise ProviderError("invalid_control")
         await self.read_details(device, failure_kind="control_failed")
-        # Do not let a speed/mode selection turn on a device switched off elsewhere.
+        # Do not let a speed/mode/display selection turn on a device switched off elsewhere.
         if command.power is None and str(device.state.device_status) != "on":
             raise ProviderError("control_failed")
+        if command.display is not None and self.matches_command(device, command):
+            return PollResult(
+                [normalize(device)],
+                manager.output_credentials_dict(),
+                control_confirmed=True,
+            )
         try:
             if command.power is not None:
                 await (device.turn_on() if command.power else device.turn_off())
-            else:
-                await (
-                    device.set_mode(command.mode)
-                    if command.mode is not None
-                    else device.set_fan_speed(command.fan_level)
-                )
+            elif command.mode is not None:
+                await device.set_mode(command.mode)
+            elif command.fan_level is not None:
+                await device.set_fan_speed(command.fan_level)
+            elif command.display is not None:
+                # BaseV2/Vital toggle_display short-circuits if light_detection_status is truthy
+                # or if bool(display_set_status) already matches the target boolean.
+                if hasattr(device.state, "light_detection_status"):
+                    device.state.light_detection_status = DeviceStatus.OFF
+                if hasattr(device.state, "display_set_status"):
+                    device.state.display_set_status = (
+                        DeviceStatus.OFF if command.display else DeviceStatus.ON
+                    )
+                await device.toggle_display(command.display)
         except (VeSyncError, aiohttp.ClientError, TimeoutError) as exc:
             error = classified(exc)
             if error.kind in {"auth", "rate_limit"}:
@@ -359,6 +396,8 @@ class VeSyncProvider:
             return str(device.state.device_status) == ("on" if command.power else "off")
         if command.mode is not None:
             return str(device.state.mode) == command.mode
+        if command.display is not None:
+            return display_state(device) == ("on" if command.display else "off")
         return (
             selected_fan_level(device) == command.fan_level and str(device.state.mode) == "manual"
         )

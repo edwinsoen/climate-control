@@ -4,7 +4,7 @@ import { ConnectionForm, type AccountConnection } from './accounts/ConnectionFor
 import { AccountCard } from './accounts/AccountCard'
 import type { Account } from './accounts/types'
 import { AirQualityChart } from './devices/AirQualityChart'
-import { DeviceControls, type ControlOptions } from './devices/DeviceControls'
+import { DeviceControls, WARNING_THRESHOLD_OPTIONS, type ControlOptions, type DeviceDisplay, type WarningThresholdId } from './devices/DeviceControls'
 import { AutomationPage, type AutomationSummary } from './devices/AutomationPage'
 import { AgentAccess } from './agent/AgentAccess'
 import { UserMenu } from './UserMenu'
@@ -20,6 +20,7 @@ type Session = {
 type Device = {
   id: string; account_id: string; account_label: string; name: string; model: string
   supported: boolean; capabilities: string[]; state: Record<string, string | number | null>
+  display?: DeviceDisplay
   retrieved_at: string | null; stale: boolean; error: string | null
   automation?: AutomationSummary
   controls: ControlOptions; control_available: boolean; control_retry_at: string | null
@@ -65,10 +66,15 @@ function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: 
         const updated = await api<Device & { control_confirmed: boolean }>(`/api/devices/${device.id}/control`, { method: 'POST', body: JSON.stringify(command) })
         onChange(updated)
         return { retryAt: updated.control_retry_at, confirmed: updated.control_confirmed }
+      }} onDisplayChange={async (change) => {
+        const updated = await api<Device & { control_confirmed: boolean }>(`/api/devices/${device.id}/display-settings`, { method: 'PUT', body: JSON.stringify(change) })
+        onChange(updated)
+        return { retryAt: updated.control_retry_at, confirmed: updated.control_confirmed }
       }} />
       <dl className="device-details">
         <div><dt>Air quality</dt><dd>{reading('air_quality')}</dd></div>
         <div><dt>Filter remaining</dt><dd data-testid="device-filter-life">{reading('filter_life', '%')}</dd></div>
+        {device.capabilities.includes('display') && <div><dt>Display</dt><dd data-testid="device-display-status">{reading('display')}</dd></div>}
         {device.capabilities.includes('pm1') && <div><dt>PM1</dt><dd>{reading('pm1', ' µg/m³')}</dd></div>}
         {device.capabilities.includes('pm10') && <div><dt>PM10</dt><dd>{reading('pm10', ' µg/m³')}</dd></div>}
       </dl>
@@ -264,6 +270,7 @@ function App() {
       {accountsPage && accounts.length === 0 && <section className="empty-state">
         <div className="empty-icon"><Icon /></div><h2 data-testid="empty-title">No accounts connected</h2>
       </section>}
+      {accountsPage && <DisplaySettings api={api} />}
       {accountsPage && <AgentAccess api={api} />}
     </main>
     {editing !== undefined && <div className="modal-backdrop"><section className="modal" data-testid="account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
@@ -273,6 +280,47 @@ function App() {
       <ConnectionForm key={editing?.id ?? 'new'} account={editing} busy={busy} onSave={saveAccount} />
     </section></div>}
   </div>
+}
+
+function DisplaySettings({ api }: { api: <T>(path: string, options?: RequestInit) => Promise<T> }) {
+  const [threshold, setThreshold] = useState<WarningThresholdId>('who_2021_24h')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    void api<{ warning_threshold: WarningThresholdId }>('/api/display-settings')
+      .then((data) => setThreshold(data.warning_threshold))
+      .catch(() => {})
+  }, [api])
+
+  async function update(next: WarningThresholdId) {
+    setBusy(true); setError('')
+    try {
+      const saved = await api<{ warning_threshold: WarningThresholdId }>('/api/display-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ warning_threshold: next }),
+      })
+      setThreshold(saved.warning_threshold)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <section className="display-settings" data-testid="display-settings" aria-labelledby="display-settings-title">
+    <div className="section-heading"><h2 id="display-settings-title">Display warnings</h2></div>
+    {error && <p className="alert error" role="alert">{error}</p>}
+    <div className="agent-token-form">
+      <label>Default warning threshold
+        <select data-testid="global-warning-threshold" value={threshold} disabled={busy}
+          onChange={(event) => void update(event.target.value as WarningThresholdId)}>
+          {WARNING_THRESHOLD_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.detail}</option>)}
+        </select>
+        <small>Used by devices in Warnings only display mode without a device override.</small>
+      </label>
+    </div>
+  </section>
 }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)

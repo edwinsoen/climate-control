@@ -113,3 +113,110 @@ async def test_offline_preserves_previous_readings(app, connected):
         device = db.scalars(select(Device)).one()
         assert device.state["pm25"] == 8
         assert device.state["connectivity"] == "offline"
+
+
+@pytest.mark.parametrize(
+    "threshold,pm25,pm10,expected",
+    [
+        ("who_2021_annual", 5, 15, False),
+        ("who_2021_annual", 6, 15, True),
+        ("who_2021_annual", 5, 16, True),
+        ("who_2021_24h", 15, 45, False),
+        ("who_2021_24h", 16, 45, True),
+        ("who_2021_24h", 15, 46, True),
+        ("who_2005_annual", 10, 20, False),
+        ("who_2005_annual", 11, 20, True),
+        ("who_2005_annual", 10, 21, True),
+        ("who_2005_24h", 25, 50, False),
+        ("who_2005_24h", 26, 50, True),
+        ("who_2005_24h", 25, 51, True),
+    ],
+)
+def test_who_warning_threshold_evaluation(threshold, pm25, pm10, expected):
+    from climate_control.display import should_display_warning
+
+    assert (
+        should_display_warning(
+            ["power", "pm25", "pm10", "air_quality"],
+            {"pm25": pm25, "pm10": pm10, "air_quality": "excellent"},
+            threshold,
+        )
+        is expected
+    )
+    assert (
+        should_display_warning(
+            ["power", "air_quality"],
+            {"air_quality": "moderate" if expected else "good"},
+            threshold,
+        )
+        is expected
+    )
+
+
+async def test_warnings_only_actuates_on_new_readings_and_syncs_external_changes(
+    app, signed_client, connected
+):
+    from climate_control.providers.base import DeviceCommand
+
+    provider = app.state.poller.provider
+    device_id = (await signed_client.get("/api/devices")).json()[0]["id"]
+    await signed_client.put(
+        f"/api/devices/{device_id}/display-settings",
+        json={"mode": "warnings_only"},
+    )
+    assert not provider.control_calls
+
+    # New reading with PM2.5 = 8 (<= 15 for default who_2021_24h) turns display off.
+    due(app, connected["id"])
+    await app.state.poller.refresh(connected["id"])
+    assert len(provider.control_calls) == 1
+    assert provider.control_calls[-1][-1] == DeviceCommand(display=False)
+    device = (await signed_client.get("/api/devices")).json()[0]
+    assert device["state"]["display"] == "off"
+    assert device["display"]["mode"] == "warnings_only"
+
+    # Subsequent reading still below threshold does not re-send display command.
+    due(app, connected["id"])
+    await app.state.poller.refresh(connected["id"])
+    assert len(provider.control_calls) == 1
+
+    # Reading exceeds threshold while device is powered off -> does not actuate.
+    provider.states["home@example.com"].update(power="off", pm25=22)
+    due(app, connected["id"])
+    await app.state.poller.refresh(connected["id"])
+    assert len(provider.control_calls) == 1
+
+    # Device is powered on and reading exceeds threshold (22 > 15) -> turns display on.
+    provider.states["home@example.com"].update(power="on", pm25=22)
+    due(app, connected["id"])
+    await app.state.poller.refresh(connected["id"])
+    assert len(provider.control_calls) == 2
+    assert provider.control_calls[-1][-1] == DeviceCommand(display=True)
+    device = (await signed_client.get("/api/devices")).json()[0]
+    assert device["state"]["display"] == "on"
+    assert device["display"]["mode"] == "warnings_only"
+
+    # Switching from "warnings_only" to "off" while PM2.5 > threshold turns display off
+    # with one command, sets mode to "manual", and does not re-trigger warning actuation.
+    with app.state.sessions() as db:
+        db.get(Account, connected["id"]).next_control_at = 0
+        db.commit()
+    resp = await signed_client.put(
+        f"/api/devices/{device_id}/display-settings",
+        json={"mode": "off"},
+    )
+    assert resp.status_code == 200
+    assert len(provider.control_calls) == 3
+    assert provider.control_calls[-1][-1] == DeviceCommand(display=False)
+    device = resp.json()
+    assert device["state"]["display"] == "off"
+    assert device["display"]["mode"] == "manual"
+
+    # In "manual" mode, an external toggle updates state.display without sending commands.
+    provider.states["home@example.com"]["display"] = "on"
+    due(app, connected["id"])
+    await app.state.poller.refresh(connected["id"])
+    assert len(provider.control_calls) == 3
+    device = (await signed_client.get("/api/devices")).json()[0]
+    assert device["state"]["display"] == "on"
+    assert device["display"]["mode"] == "manual"

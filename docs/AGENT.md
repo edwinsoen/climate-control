@@ -65,8 +65,8 @@ Create a token under **Accounts → Agent access**. Choose its scopes, and copy 
 
 | Scope | Tools |
 | --- | --- |
-| `read` | `list_devices`, `get_device`, `get_device_history`, `get_outdoor_air_quality`, `get_outdoor_history`, `get_rule_schema`, `get_device_automation`, `list_rule_events`, `list_rule_revisions`, `preview_rules` |
-| `control` | `set_device_power`, `set_device_fan_level`, `set_device_mode`, `refresh_device_status` |
+| `read` | `list_devices`, `get_device`, `get_device_history`, `get_outdoor_air_quality`, `get_outdoor_history`, `get_rule_schema`, `get_device_automation`, `list_rule_events`, `list_rule_revisions`, `preview_rules`, `get_display_settings` |
+| `control` | `set_device_power`, `set_device_fan_level`, `set_device_mode`, `set_device_display`, `set_display_warning_threshold`, `refresh_device_status` |
 | `rules` | `save_device_rules`, `configure_device_automation`, `pause_device_automation`, `resume_device_automation`, `request_rule_review`, `list_planning_jobs`, `claim_planning_job`, `renew_planning_job`, `submit_planning_result`, `fail_planning_job` |
 
 **How the tools behave:**

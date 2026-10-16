@@ -38,6 +38,7 @@ class DeviceCommand:
     power: bool | None = None
     mode: str | None = None
     fan_level: int | None = None
+    display: bool | None = None
 
 
 @dataclass

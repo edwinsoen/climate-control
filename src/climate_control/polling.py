@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, update
 
 from climate_control.config import WorkerSettings
 from climate_control.db import Account, Automation, Device
+from climate_control.display import global_warning_threshold, should_display_warning
 from climate_control.history import prune_readings, record_reading
 from climate_control.providers.base import DeviceCommand, DeviceProvider, PollResult, ProviderError
 from climate_control.security import Vault
@@ -96,13 +97,14 @@ class Poller:
                 # Upstream errors may contain secrets; log only a stable event and internal ID.
                 logger.warning("provider_poll_failed account=%s", account.id)
                 result = PollResult([], failure=ProviderError())
-            self.finish(account, result)
+            actions = self.finish(account, result)
             logger.info(
                 "account_polled account=%s status=%s",
                 account.id,
                 result.failure.kind if result.failure else "ok",
             )
-            return RefreshResult("refreshed")
+        await self.actuate_display_warnings(actions)
+        return RefreshResult("refreshed")
 
     async def queued_control(self, device_id: str, command: DeviceCommand) -> RefreshResult:
         # Waiting requests hold no lease or capacity slot. The database lease still
@@ -127,7 +129,13 @@ class Poller:
             await asyncio.sleep(min(0.25, remaining))
 
     async def control(
-        self, device_id: str, command: DeviceCommand | None, *, guard=None
+        self,
+        device_id: str,
+        command: DeviceCommand | None,
+        *,
+        guard=None,
+        enforce_cooldown: bool = True,
+        actuate_warnings: bool = True,
     ) -> RefreshResult:
         async with self.concurrency:
             current = time.time()
@@ -136,22 +144,24 @@ class Poller:
                 if device is None:
                     return RefreshResult("missing")
                 lease_token = str(uuid4())
+                conditions = [
+                    Account.id == device.account_id,
+                    Account.provider == "vesync",
+                    Account.status != "auth_error",
+                    Account.lease_until <= current,
+                    # User commands cannot bypass a provider's rate-limit backoff.
+                    (Account.status != "rate_limited") | (Account.next_poll_at <= current),
+                ]
+                if enforce_cooldown:
+                    conditions.append(Account.next_control_at <= current)
                 claimed = db.execute(
                     update(Account)
-                    .where(
-                        Account.id == device.account_id,
-                        Account.provider == "vesync",
-                        Account.status != "auth_error",
-                        Account.lease_until <= current,
-                        Account.next_control_at <= current,
-                        # User commands cannot bypass a provider's rate-limit backoff.
-                        (Account.status != "rate_limited") | (Account.next_poll_at <= current),
-                    )
+                    .where(*conditions)
                     .values(
                         lease_token=lease_token,
                         lease_until=current + LEASE_SECONDS,
                         next_control_at=current + CONTROL_COOLDOWN_SECONDS
-                        if command is not None
+                        if command is not None and enforce_cooldown
                         else Account.next_control_at,
                     )
                 ).rowcount
@@ -168,7 +178,7 @@ class Poller:
                     if account.lease_until > current:
                         return RefreshResult("busy")
                     deadline = max(
-                        account.next_control_at,
+                        account.next_control_at if enforce_cooldown else 0,
                         account.next_poll_at if account.status == "rate_limited" else 0,
                     )
                     return RefreshResult("cooldown", max(1, math.ceil(deadline - current)))
@@ -193,15 +203,57 @@ class Poller:
                     "provider_control_failed account=%s device=%s", account.id, device_id
                 )
                 result = PollResult([], failure=ProviderError("control_failed"))
-            self.finish(account, result, complete=False)
-            return RefreshResult(
-                result.failure.kind if result.failure else "controlled",
-                math.ceil(result.failure.retry_after) if result.failure else 0,
-                result.control_confirmed,
+            reset_display_mode = (
+                provider_id
+                if command is not None and command.display is not None and actuate_warnings
+                else None
+            )
+            actions = self.finish(
+                account,
+                result,
+                complete=False,
+                actuate_warnings=actuate_warnings
+                and (command is None or command.display is None),
+                reset_display_mode=reset_display_mode,
+            )
+        await self.actuate_display_warnings(actions)
+        return RefreshResult(
+            result.failure.kind if result.failure else "controlled",
+            math.ceil(result.failure.retry_after) if result.failure else 0,
+            result.control_confirmed,
+        )
+
+    async def actuate_display_warnings(self, actions: list[tuple[str, bool]]) -> None:
+        for device_id, desired in actions:
+            target = "on" if desired else "off"
+
+            def guard(db, device, _now, target=target):
+                return (
+                    device.display_mode == "warnings_only"
+                    and device.state.get("power") == "on"
+                    and device.state.get("connectivity") != "offline"
+                    and device.state.get("display") != target
+                )
+
+            await self.control(
+                device_id,
+                DeviceCommand(display=desired),
+                guard=guard,
+                enforce_cooldown=False,
+                actuate_warnings=False,
             )
 
-    def finish(self, original: Account, result: PollResult, *, complete: bool = True) -> None:
+    def finish(
+        self,
+        original: Account,
+        result: PollResult,
+        *,
+        complete: bool = True,
+        actuate_warnings: bool = True,
+        reset_display_mode: str | None = None,
+    ) -> list[tuple[str, bool]]:
         current = time.time()
+        actions: list[tuple[str, bool]] = []
         with self.sessions() as db:
             # Fencing: a late worker cannot overwrite a new lease's results or a deleted account.
             owned = db.execute(
@@ -211,7 +263,7 @@ class Poller:
             ).rowcount
             if not owned:
                 db.rollback()
-                return
+                return []
             account = db.get(Account, original.id)
             if result.tokens:
                 account.tokens = self.vault.seal(result.tokens)
@@ -247,6 +299,7 @@ class Poller:
                     original.next_poll_at, current + CONTROL_COOLDOWN_SECONDS
                 )
 
+            global_threshold = global_warning_threshold(db)
             existing = {
                 device.provider_id: device
                 for device in db.scalars(select(Device).where(Device.account_id == account.id))
@@ -256,6 +309,7 @@ class Poller:
                 if device is None:
                     device = Device(account_id=account.id, provider_id=snapshot.provider_id)
                     db.add(device)
+                prev_retrieved_at = device.retrieved_at
                 device.name = snapshot.name
                 device.model = snapshot.model
                 device.supported = snapshot.supported
@@ -277,6 +331,31 @@ class Poller:
                 db.flush()
                 if db.get(Automation, device.id) is None:
                     db.add(Automation(device_id=device.id))
+                fresh_reading = (
+                    snapshot.supported
+                    and not snapshot.error
+                    and snapshot.retrieved_at is not None
+                    and math.isfinite(snapshot.retrieved_at)
+                    and snapshot.state.get("connectivity") == "online"
+                    and (prev_retrieved_at is None or snapshot.retrieved_at >= prev_retrieved_at)
+                )
+                if fresh_reading:
+                    observed_display = device.state.get("display")
+                    if reset_display_mode == snapshot.provider_id:
+                        device.display_mode = "manual"
+                    elif (
+                        actuate_warnings
+                        and device.display_mode == "warnings_only"
+                        and device.state.get("power") == "on"
+                        and (device.controls or {}).get("display")
+                    ):
+                        desired = should_display_warning(
+                            device.capabilities or [],
+                            device.state or {},
+                            device.warning_threshold or global_threshold,
+                        )
+                        if desired is not None and observed_display != ("on" if desired else "off"):
+                            actions.append((device.id, desired))
             # A failed or incomplete poll never removes existing devices.
             if complete and failure is None:
                 seen = {snapshot.provider_id for snapshot in result.devices}
@@ -285,6 +364,7 @@ class Poller:
                         db.delete(device)
             prune_readings(db, current)
             db.commit()
+        return actions
 
     async def tick(self) -> dict:
         with self.sessions() as db:
