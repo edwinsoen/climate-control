@@ -452,9 +452,9 @@ async def test_vital_display_control_bypasses_library_short_circuit():
         "fanSpeedLevel": 2,
         "AQLevel": 1,
         "PM25": 4,
-        "screenState": 1,
+        "screenState": 0,
         "childLockSwitch": 0,
-        "screenSwitch": 0,
+        "screenSwitch": 1,
         "lightDetectionSwitch": 1,
         "environmentLightState": 0,
         "scheduleCount": 0,
@@ -477,6 +477,16 @@ async def test_vital_display_control_bypasses_library_short_circuit():
 
     manager.get_devices = get_devices
     manager.async_call_api = call_api
+    # When screenSwitch is 1 and screenState is 0 (dimmed by sleep/light detection),
+    # display_state reads "on" from display_set_status and skips a redundant setDisplay(True).
+    noop_on = await VeSyncProvider().apply_control(
+        manager, "cid-0", DeviceCommand(display=True)
+    )
+    assert [req["method"] for req in requests] == ["getPurifierStatus"]
+    assert noop_on.devices[0].state["display"] == "on"
+    assert noop_on.control_confirmed is True
+
+    requests.clear()
     result = await VeSyncProvider().apply_control(
         manager, "cid-0", DeviceCommand(display=False)
     )
@@ -496,10 +506,10 @@ async def test_vital_display_control_bypasses_library_short_circuit():
     assert [req["method"] for req in requests] == ["getPurifierStatus"]
     assert noop.control_confirmed is True
 
-    # display_state falls back to display_set_status when display_status is UNKNOWN.
+    # display_state falls back to display_status when display_set_status is UNKNOWN.
     device = manager.devices.air_purifiers[0]
-    device.state.display_status = DeviceStatus.UNKNOWN
-    device.state.display_set_status = DeviceStatus.ON
+    device.state.display_set_status = DeviceStatus.UNKNOWN
+    device.state.display_status = DeviceStatus.ON
     assert normalize(device).state["display"] == "on"
 
 

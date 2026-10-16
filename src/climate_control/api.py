@@ -378,7 +378,9 @@ async def connect_account(payload: AccountInput, request: Request):
             db.rollback()
             raise HTTPException(409, "This account is already connected.") from exc
         account_id = account.id
-    await provider_operation(request, request.app.state.poller.refresh(account_id))
+    await provider_operation(
+        request, request.app.state.poller.refresh(account_id, actuate_warnings=False)
+    )
     with request.app.state.sessions() as db:
         saved = db.get(Account, account_id)
         if saved is None:
@@ -422,7 +424,9 @@ async def reconnect_account(account_id: str, payload: AccountInput, request: Req
             db.rollback()
             raise HTTPException(409, "A refresh is running. Try again when it finishes.")
         db.commit()
-    await provider_operation(request, request.app.state.poller.refresh(account_id))
+    await provider_operation(
+        request, request.app.state.poller.refresh(account_id, actuate_warnings=False)
+    )
     with request.app.state.sessions() as db:
         saved = db.get(Account, account_id)
         if saved is None:
@@ -837,7 +841,9 @@ def device_history_view(ctx, device_id, hours=24, raw=False, after=None, limit=1
 
 @router.post("/api/accounts/{account_id}/refresh", dependencies=[Depends(authenticated)])
 async def refresh_account(account_id: str, request: Request):
-    result = await provider_operation(request, request.app.state.poller.refresh(account_id))
+    result = await provider_operation(
+        request, request.app.state.poller.refresh(account_id, actuate_warnings=False)
+    )
     if result.status == "missing":
         raise HTTPException(404, "Account not found.")
     if result.status == "auth_error":

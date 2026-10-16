@@ -76,7 +76,7 @@ class Poller:
                 )
             return account, RefreshResult("claimed")
 
-    async def refresh(self, account_id: str) -> RefreshResult:
+    async def refresh(self, account_id: str, *, actuate_warnings: bool = True) -> RefreshResult:
         # Acquire a capacity slot before claiming; queued work never holds an expiring lease.
         async with self.concurrency:
             account, decision = self.claim(account_id)
@@ -97,13 +97,14 @@ class Poller:
                 # Upstream errors may contain secrets; log only a stable event and internal ID.
                 logger.warning("provider_poll_failed account=%s", account.id)
                 result = PollResult([], failure=ProviderError())
-            actions = self.finish(account, result)
+            actions = self.finish(account, result, actuate_warnings=actuate_warnings)
             logger.info(
                 "account_polled account=%s status=%s",
                 account.id,
                 result.failure.kind if result.failure else "ok",
             )
-        await self.actuate_display_warnings(actions)
+        if actions:
+            await self.actuate_display_warnings(actions)
         return RefreshResult("refreshed")
 
     async def queued_control(self, device_id: str, command: DeviceCommand) -> RefreshResult:
@@ -135,7 +136,7 @@ class Poller:
         *,
         guard=None,
         enforce_cooldown: bool = True,
-        actuate_warnings: bool = True,
+        reset_display_mode: bool = True,
     ) -> RefreshResult:
         async with self.concurrency:
             current = time.time()
@@ -203,25 +204,20 @@ class Poller:
                     "provider_control_failed account=%s device=%s", account.id, device_id
                 )
                 result = PollResult([], failure=ProviderError("control_failed"))
-            reset_display_mode = (
-                provider_id
-                if command is not None and command.display is not None and actuate_warnings
-                else None
-            )
-            actions = self.finish(
+            self.finish(
                 account,
                 result,
                 complete=False,
-                actuate_warnings=actuate_warnings
-                and (command is None or command.display is None),
-                reset_display_mode=reset_display_mode,
+                actuate_warnings=False,
+                reset_display_mode=provider_id
+                if command is not None and command.display is not None and reset_display_mode
+                else None,
             )
-        await self.actuate_display_warnings(actions)
-        return RefreshResult(
-            result.failure.kind if result.failure else "controlled",
-            math.ceil(result.failure.retry_after) if result.failure else 0,
-            result.control_confirmed,
-        )
+            return RefreshResult(
+                result.failure.kind if result.failure else "controlled",
+                math.ceil(result.failure.retry_after) if result.failure else 0,
+                result.control_confirmed,
+            )
 
     async def actuate_display_warnings(self, actions: list[tuple[str, bool]]) -> None:
         for device_id, desired in actions:
@@ -240,7 +236,7 @@ class Poller:
                 DeviceCommand(display=desired),
                 guard=guard,
                 enforce_cooldown=False,
-                actuate_warnings=False,
+                reset_display_mode=False,
             )
 
     def finish(

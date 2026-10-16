@@ -114,7 +114,7 @@ def capabilities(device) -> list[str]:
 
 
 def display_state(device) -> str | None:
-    for attr in ("display_status", "display_set_status"):
+    for attr in ("display_set_status", "display_status"):
         raw = getattr(device.state, attr, None)
         if isinstance(raw, bool):
             return "on" if raw else "off"
