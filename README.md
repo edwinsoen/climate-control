@@ -23,13 +23,13 @@ Sign in and connect an account already paired with purifiers in the VeSync or Xi
 
 ## Deploy to GCP
 
-After the one-time Terraform bootstrap and Secret Manager setup in the [deployment guide](docs/DEPLOYMENT.md), deploy or update everything with:
+After the one-time Terraform bootstrap, Secret Manager setup, and Cloud Build trigger configuration in the [deployment guide](docs/DEPLOYMENT.md), pushes to `main` build and deploy automatically through [`cloudbuild.yaml`](cloudbuild.yaml), or you can deploy manually with:
 
 ```sh
 invoke deploy
 ```
 
-The command builds the API and UI, runs migrations, publishes Firebase Hosting, and enables the minute worker and five-minute planner schedules. The planner uses Gemini on Agent Platform by default; `invoke deploy-agent` moves it to Agent Runtime. Use `uv run invoke deploy` if Invoke is not installed globally, or `invoke deploy --dry-run` to preview the target and secret versions. The deployment uses an external PostgreSQL URI.
+Each release builds the API and UI, runs migrations, publishes Firebase Hosting, deploys the rule planner to Agent Runtime (using Gemini on Agent Platform by default), and enables the minute worker and five-minute planner schedules. `invoke deploy-agent` can also update the Agent Runtime deployment standalone. Use `uv run invoke deploy` if Invoke is not installed globally, or `invoke deploy --dry-run` to preview the target and secret versions. The deployment uses an external PostgreSQL URI.
 
 ## Develop and verify
 
