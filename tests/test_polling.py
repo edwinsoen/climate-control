@@ -3,7 +3,9 @@ import time
 
 import pytest
 from sqlalchemy import select
+from test_automation import setup_rules
 
+from climate_control.agent.worker import PlannerJobTrigger
 from climate_control.db import Account, Device
 from climate_control.providers.base import DeviceSnapshot, PollResult, ProviderError
 
@@ -220,3 +222,53 @@ async def test_warnings_only_actuates_on_new_readings_and_syncs_external_changes
     device = (await signed_client.get("/api/devices")).json()[0]
     assert device["state"]["display"] == "on"
     assert device["display"]["mode"] == "manual"
+
+
+async def test_scheduled_tick_tolerates_jitter_but_not_for_cooldown_or_rate_limit(app, connected):
+    with app.state.sessions() as db:
+        db.get(Account, connected["id"]).next_poll_at = time.time() + 3
+        db.commit()
+    assert (await app.state.poller.refresh(connected["id"])).status == "cooldown"
+    assert (await app.state.poller.tick())["refreshed"] == 1
+    with app.state.sessions() as db:
+        account = db.get(Account, connected["id"])
+        account.status, account.next_poll_at = "rate_limited", time.time() + 3
+        db.commit()
+    assert (await app.state.poller.tick())["checked"] == 0
+
+
+async def test_tick_starts_planner_after_failure_but_not_after_recent_start(
+    app, signed_client, controlled_device, monkeypatch
+):
+    import google.auth
+    from google.auth.transport import requests
+
+    posts, failures = [], [True]
+
+    class Session:
+        def __init__(self, credentials):
+            pass
+
+        def post(self, url, **kwargs):
+            posts.append(url)
+            return self
+
+        def raise_for_status(self):
+            if failures and failures.pop():
+                raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes: (None, None))
+    monkeypatch.setattr(requests, "AuthorizedSession", Session)
+    trigger = PlannerJobTrigger("projects/p/locations/r/jobs/planner")
+    app.state.planning_trigger = app.state.poller.planning_trigger = trigger
+    await app.state.poller.tick()
+    assert posts == []
+    path = await setup_rules(signed_client, controlled_device)
+    response = await signed_client.put(
+        path, json={"base_revision": 1, "generation": 2, "owner": "agent", "enabled": True}
+    )
+    assert response.status_code == 200
+    assert len(posts) == 1  # The user's request failed to start the job.
+    await app.state.poller.tick()
+    await app.state.poller.tick()
+    assert len(posts) == 2

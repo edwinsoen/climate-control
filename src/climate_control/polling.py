@@ -23,6 +23,17 @@ LEASE_SECONDS = 300
 POLL_TIMEOUT_SECONDS = 240
 CONTROL_COOLDOWN_SECONDS = 5
 CONTROL_QUEUE_SECONDS = 30
+# Scheduled ticks poll accounts due within this window so scheduler jitter skips no cycle.
+POLL_GRACE_SECONDS = 5
+# Bounds planner starts while a backlog drains; matches the planning lease.
+PLANNER_TRIGGER_SECONDS = 300
+
+
+def poll_due(current: float, due_before: float):
+    # Provider rate-limit deadlines are never shortened by the scheduling grace.
+    return (Account.next_poll_at <= current) | (
+        (Account.status != "rate_limited") & (Account.next_poll_at <= due_before)
+    )
 SUPPORTED_PROVIDERS = ("vesync", "xiaomi")
 
 
@@ -49,13 +60,17 @@ class Poller:
         self.provider = provider["vesync"] if isinstance(provider, dict) else provider
         self.outdoor = outdoor
         self.concurrency = asyncio.Semaphore(3)
+        self.automation = None
+        self.planning_trigger = None
 
     def provider_for(self, provider_name: str) -> DeviceProvider:
         if self.providers is not None:
             return self.providers[provider_name]
         return self.provider
 
-    def claim(self, account_id: str) -> tuple[Account | None, RefreshResult]:
+    def claim(
+        self, account_id: str, due_before: float | None = None
+    ) -> tuple[Account | None, RefreshResult]:
         current = time.time()
         lease_token = str(uuid4())
         with self.sessions() as db:
@@ -64,7 +79,7 @@ class Poller:
                 .where(
                     Account.id == account_id,
                     Account.status != "auth_error",
-                    Account.next_poll_at <= current,
+                    poll_due(current, current if due_before is None else due_before),
                     Account.lease_until <= current,
                 )
                 .values(
@@ -87,10 +102,12 @@ class Poller:
                 )
             return account, RefreshResult("claimed")
 
-    async def refresh(self, account_id: str, *, actuate_warnings: bool = True) -> RefreshResult:
+    async def refresh(
+        self, account_id: str, *, actuate_warnings: bool = True, due_before: float | None = None
+    ) -> RefreshResult:
         # Acquire a capacity slot before claiming; queued work never holds an expiring lease.
         async with self.concurrency:
-            account, decision = self.claim(account_id)
+            account, decision = self.claim(account_id, due_before)
             if account is None:
                 return decision
             try:
@@ -380,7 +397,6 @@ class Poller:
                 for provider_id, device in existing.items():
                     if provider_id not in seen:
                         db.delete(device)
-            prune_readings(db, current)
             db.commit()
         return actions
 
@@ -393,27 +409,44 @@ class Poller:
                 db.execute(delete(model).where(model.expires_at <= current))
             prune_readings(db, current)
             db.commit()
+            due_before = current + POLL_GRACE_SECONDS
             ids = list(
                 db.scalars(
                     select(Account.id).where(
-                        Account.next_poll_at <= current,
+                        poll_due(current, due_before),
                         Account.lease_until <= current,
                         Account.status != "auth_error",
                     )
                 )
             )
-        work = [self.refresh(account_id) for account_id in ids]
+        work = [self.refresh(account_id, due_before=due_before) for account_id in ids]
         if self.outdoor is not None:
             work.append(self.outdoor.tick())
         outcomes = await asyncio.gather(*work)
         results = outcomes[: len(ids)]
-        automation_checked = await self.automation.tick() if hasattr(self, "automation") else 0
+        automation_checked = await self.automation.tick() if self.automation else 0
+        await self.trigger_planning()
         return {
             "automation_checked": automation_checked,
             "checked": len(ids),
             "refreshed": sum(r.status == "refreshed" for r in results),
             "outdoor_checked": outcomes[-1]["checked"] if self.outdoor is not None else 0,
         }
+
+    async def trigger_planning(self) -> None:
+        trigger = self.planning_trigger
+        # Skip while a recent start, including one requested by a user, is still booting.
+        started_at = getattr(trigger, "started_at", -math.inf)
+        if trigger is None or time.monotonic() - started_at < PLANNER_TRIGGER_SECONDS:
+            return
+        from climate_control.automation_api import claimable_jobs
+
+        try:
+            if await asyncio.to_thread(claimable_jobs, self, 1):
+                # The Cloud Run Job trigger blocks on an HTTP request.
+                await asyncio.to_thread(trigger)
+        except Exception:
+            logger.warning("planner_trigger_check_failed")
 
     async def run(self) -> None:
         while True:

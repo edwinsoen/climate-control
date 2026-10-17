@@ -518,7 +518,12 @@ def test_cloud_build_mode_adopts_existing_gcp_resources_when_gcs_state_is_empty(
         if command[:4] == ["gcloud", "run", "services", "list"]:
             return json.dumps([{"metadata": {"name": "climate-control-api"}}])
         if command[:4] == ["gcloud", "scheduler", "jobs", "list"]:
-            return json.dumps([{"name": "projects/p/locations/r/jobs/climate-control-tick"}])
+            return json.dumps(
+                [
+                    {"name": f"projects/p/locations/r/jobs/climate-control-{kind}"}
+                    for kind in ("tick", "plan")
+                ]
+            )
         if command[0] == "terraform" and "import" in command:
             deployment["commands"].append(command)
             deployment["resources"] = adopted_resources
@@ -539,11 +544,11 @@ def test_cloud_build_mode_adopts_existing_gcp_resources_when_gcs_state_is_empty(
         for cmd in deployment["commands"]
         if cmd[0] == "terraform" and "import" in cmd
     ]
+    assert [cmd[1:5] for cmd in deployment["commands"] if "delete" in cmd] == [
+        ["scheduler", "jobs", "delete", "climate-control-plan"],
+        ["run", "jobs", "delete", "climate-control-worker"],
+    ]
     assert imports == [
-        (
-            'google_cloud_run_v2_job.job["worker"]',
-            "projects/test-project/locations/asia-southeast1/jobs/climate-control-worker",
-        ),
         (
             'google_cloud_run_v2_job.job["migrate"]',
             "projects/test-project/locations/asia-southeast1/jobs/climate-control-migrate",

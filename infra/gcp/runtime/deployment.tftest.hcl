@@ -35,16 +35,12 @@ run "migration_stage" {
     error_message = "Initial deployment must not start the API or scheduling before migrations."
   }
   assert {
-    condition     = google_cloud_run_v2_job.job["worker"].template[0].template[0].containers[0].args == tolist(["-m", "climate_control.cli", "tick"]) && google_cloud_run_v2_job.job["worker"].template[0].template[0].max_retries == 0
-    error_message = "Worker must execute one tick without blind automatic retries."
+    condition     = keys(google_cloud_run_v2_job.job) == ["migrate", "planner"] && google_cloud_run_v2_job.job["migrate"].template[0].template[0].max_retries == 0
+    error_message = "Only migration and planner jobs exist, without blind automatic retries."
   }
   assert {
     condition     = toset([for env in google_cloud_run_v2_job.job["migrate"].template[0].template[0].containers[0].env : env.name]) == toset(["AUTO_MIGRATE", "DATABASE_URL"])
     error_message = "Migration job must not receive encryption or login credentials."
-  }
-  assert {
-    condition     = !contains([for env in google_cloud_run_v2_job.job["worker"].template[0].template[0].containers[0].env : env.name], "ADMIN_PASSWORD_HASH")
-    error_message = "Worker must not receive login credentials."
   }
 }
 run "active_stage" {
@@ -54,8 +50,16 @@ run "active_stage" {
     scheduler_paused = false
   }
   assert {
-    condition     = google_cloud_scheduler_job.tick.schedule == "* * * * *" && google_cloud_scheduler_job.tick.http_target[0].oauth_token[0].service_account_email == var.platform.identities["scheduler"]
-    error_message = "Minute schedule must use the dedicated OAuth scheduler identity."
+    condition     = google_cloud_scheduler_job.tick.schedule == "* * * * *" && google_cloud_scheduler_job.tick.http_target[0].oidc_token[0].service_account_email == var.platform.identities["scheduler"] && google_cloud_scheduler_job.tick.http_target[0].oidc_token[0].audience == "https://climate-test.web.app/internal/poll"
+    error_message = "Minute schedule must use the dedicated OIDC scheduler identity."
+  }
+  assert {
+    condition     = one([for env in google_cloud_run_v2_service.api[0].template[0].containers[0].env : env.value if env.name == "SCHEDULER_SERVICE_ACCOUNT"]) == var.platform.identities["scheduler"] && one([for env in google_cloud_run_v2_service.api[0].template[0].containers[0].env : env.value if env.name == "SCHEDULER_AUDIENCE"]) == google_cloud_scheduler_job.tick.http_target[0].oidc_token[0].audience
+    error_message = "The API must verify the scheduler's identity and audience."
+  }
+  assert {
+    condition     = google_cloud_scheduler_job.tick.attempt_deadline == "300s" && google_cloud_run_v2_service.api[0].template[0].timeout == "300s"
+    error_message = "A scheduled tick must be allowed to outlast the Firebase proxy limit."
   }
   assert {
     condition     = google_cloud_run_v2_service.api[0].template[0].containers[0].args == tolist(["-m", "climate_control.cli", "serve-api"])
@@ -73,7 +77,7 @@ run "active_stage" {
 run "premature_schedule" {
   command = plan
   variables { scheduler_paused = false }
-  expect_failures = [google_cloud_scheduler_job.tick, google_cloud_scheduler_job.plan]
+  expect_failures = [google_cloud_scheduler_job.tick]
 }
 
 run "retain_api_during_migration" {
@@ -118,10 +122,6 @@ run "planner_least_privilege" {
     condition     = one([for env in google_cloud_run_v2_service.api[0].template[0].containers[0].env : env.value if env.name == "PLANNER_JOB"]) == "projects/climate-test/locations/asia-southeast1/jobs/climate-control-planner" && google_cloud_run_v2_job_iam_member.api_planner[0].member == "serviceAccount:${var.platform.identities["api"]}"
     error_message = "The API must be able to start planning immediately."
   }
-  assert {
-    condition     = google_cloud_scheduler_job.plan[0].schedule == "*/5 * * * *"
-    error_message = "Planning runs on a five-minute schedule."
-  }
 }
 
 run "planner_disabled" {
@@ -131,7 +131,7 @@ run "planner_disabled" {
     agent_runtime_resource = "projects/climate-test/locations/asia-southeast1/reasoningEngines/1"
   }
   assert {
-    condition     = !contains(keys(google_cloud_run_v2_job.job), "planner") && length(google_cloud_scheduler_job.plan) == 0
-    error_message = "A disabled planner creates no job or schedule."
+    condition     = keys(google_cloud_run_v2_job.job) == ["migrate"] && length(google_cloud_run_v2_job_iam_member.api_planner) == 0
+    error_message = "A disabled planner creates no job or trigger permission."
   }
 }

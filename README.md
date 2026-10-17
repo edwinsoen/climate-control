@@ -33,7 +33,7 @@ One-time setup, detailed in the [deployment guide](docs/DEPLOYMENT.md): bootstra
 uv run invoke deploy            # add --dry-run to preview the target and secret versions
 ```
 
-Both paths share Terraform state in GCS and run the same release. It builds the API and UI, runs migrations, and publishes Firebase Hosting. It then deploys the rule planner to Agent Runtime (Gemini on Agent Platform by default) and enables the minute worker and five-minute planner schedules. If a release fails, the schedules stay paused until the next successful one. `invoke deploy-agent` updates the planner on its own.
+Both paths share Terraform state in GCS and run the same release. It builds the API and UI, runs migrations, and publishes Firebase Hosting. It then deploys the rule planner to Agent Runtime (Gemini on Agent Platform by default) and enables the minute tick schedule, which calls the API; the planner Job starts on demand. If a release fails, the schedule stays paused until the next successful one. `invoke deploy-agent` updates the planner on its own.
 
 ## Develop and verify
 

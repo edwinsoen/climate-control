@@ -25,7 +25,7 @@ class Runtime:
     poller: Poller
 
 
-def create_runtime(settings: WorkerSettings, provider=None, outdoor_provider=None, *, worker=True):
+def create_runtime(settings: WorkerSettings, provider=None, outdoor_provider=None):
     engine, sessions = database(settings.database_url)
     vault = Vault(settings.encryption_key)
     outdoor = OutdoorCollector(
@@ -44,8 +44,7 @@ def create_runtime(settings: WorkerSettings, provider=None, outdoor_provider=Non
         provider or default_providers,
         outdoor=outdoor,
     )
-    if worker:
-        poller.automation = RuleEngine(sessions, settings, poller)
+    poller.automation = RuleEngine(sessions, settings, poller)
     return Runtime(engine, sessions, vault, outdoor, poller)
 
 

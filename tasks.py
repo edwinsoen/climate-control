@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
     }
 )
 def deploy(context, dry_run=False):
-    """Build and deploy the API, worker, migrations, and Firebase UI to GCP."""
+    """Build and deploy the API, planner, migrations, and Firebase UI to GCP."""
     command = ["uv", "run", "--extra", "agent-runtime", "python", "-m", "scripts.deploy_gcp"]
     if dry_run:
         command.append("--dry-run")

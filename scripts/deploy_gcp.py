@@ -504,7 +504,7 @@ def adopt_existing_runtime(platform, variables, current=None):
             run_jobs,
             f"projects/{project}/locations/{region}/jobs/{name}-{kind}",
         )
-        for kind in ("worker", "migrate", "planner")
+        for kind in ("migrate", "planner")
     ] + [
         (
             "google_cloud_run_v2_service.api[0]",
@@ -518,13 +518,36 @@ def adopt_existing_runtime(platform, variables, current=None):
             schedules,
             f"projects/{project}/locations/{region}/jobs/{name}-tick",
         ),
+    ]
+    # Ticks now run on the API and planning starts on demand. Untracked resources from the
+    # earlier design would keep running outside Terraform, so remove them.
+    legacy = [
         (
             "google_cloud_scheduler_job.plan[0]",
             f"{name}-plan",
             schedules,
-            f"projects/{project}/locations/{region}/jobs/{name}-plan",
+            ["gcloud", "scheduler", "jobs", "delete", f"{name}-plan", "--location", region],
+        ),
+        (
+            'google_cloud_run_v2_job.job["worker"]',
+            f"{name}-worker",
+            run_jobs,
+            ["gcloud", "run", "jobs", "delete", f"{name}-worker", "--region", region],
         ),
     ]
+    orphans = [
+        (short, command)
+        for address, short, found, command in legacy
+        if short in found and address not in current
+    ]
+    if orphans and f"{name}-tick" in schedules:
+        # The tick still starts the worker until it is retargeted at the API.
+        run(scheduler_command(platform, "pause"))
+    for short, command in orphans:
+        print(f"Removing retired {short}...", flush=True)
+        if short == f"{name}-worker":
+            drain_job(platform, "worker")
+        run([*command, "--project", project, "--quiet"])
     existing = [
         (address, target)
         for address, short, found, target in candidates
@@ -923,7 +946,7 @@ def deploy(
                     "steps": [
                         "build UI and backend",
                         "push image and resolve digest",
-                        "pause schedules and drain workers and planner",
+                        "pause schedules and drain jobs",
                         "update jobs",
                         "run migrations",
                         "deploy API and check readiness",
@@ -984,13 +1007,14 @@ def deploy(
     schedules = [kind for kind, address in SCHEDULES.items() if address in resources]
     try:
         if schedules:
-            print("Pausing schedules and draining workers...", flush=True)
+            print("Pausing schedules and draining jobs...", flush=True)
             for kind in schedules:
                 run(scheduler_command(platform, "pause", kind))
+        # The retired worker Job is drained once on upgrade, before Terraform removes it.
         for kind in ("worker", "planner", "migrate"):
             if f'google_cloud_run_v2_job.job["{kind}"]' in resources:
                 drain_job(platform, kind)
-        print("Updating worker, planner, and migration jobs...", flush=True)
+        print("Updating planner and migration jobs...", flush=True)
         apply(variables)
         schedules = [kind for kind, address in SCHEDULES.items() if address in runtime_state()]
         print("Running database migrations...", flush=True)
