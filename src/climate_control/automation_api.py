@@ -463,6 +463,8 @@ def context_view(ctx, device_id, *, history_limit=1000):
                 "pm1": "µg/m³",
                 "pm10": "µg/m³",
                 "air_quality": "rank 1–4",
+                "temperature": "°C",
+                "humidity": "%",
                 "outdoor": "AQI",
             },
             "target_history": history_view(

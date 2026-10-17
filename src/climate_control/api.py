@@ -26,6 +26,8 @@ from starlette.responses import RedirectResponse
 
 from climate_control.db import Account, Device, LoginSession, LoginThrottle, OAuthFlow, now
 from climate_control.display import (
+    PHYSICAL_DISPLAY_STATES,
+    WARNING_DISPLAY_MODES,
     DisplaySelection,
     WarningThresholdId,
     device_display_view,
@@ -41,6 +43,7 @@ from climate_control.outdoor import (
     selected_location,
     set_location,
 )
+from climate_control.polling import SUPPORTED_PROVIDERS
 from climate_control.providers.aqicn import OutdoorError
 from climate_control.providers.base import DeviceCommand, ProviderError
 from climate_control.security import create_session, digest, verify_password
@@ -309,17 +312,26 @@ async def google_callback(request: Request, state: str = "", code: str = ""):
 
 
 class AccountInput(BaseModel):
-    provider: Literal["vesync"]
+    provider: Literal["vesync", "xiaomi"]
     label: str = Field(min_length=1, max_length=100)
-    email: str = Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-    password: str = Field(min_length=1, max_length=1024)
+    email: str = Field(min_length=3, max_length=254, pattern=r"^\S+$")
+    password: str = Field(default="", max_length=1024)
+    verification_code: str = Field(default="", max_length=32)
     country_code: str = Field(default="US", pattern=r"^[a-zA-Z]{2}$")
     time_zone: str = Field(default="UTC", max_length=100)
 
-    @field_validator("label", "email", mode="before")
+    @field_validator("label", "email", "verification_code", mode="before")
     @classmethod
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_account_fields(self):
+        if self.provider == "vesync" and (
+            "@" not in self.email or "." not in self.email.split("@", 1)[1]
+        ):
+            raise ValueError("Enter a valid email address")
+        return self
 
     @field_validator("time_zone")
     @classmethod
@@ -360,8 +372,11 @@ def list_accounts(request: Request):
 @router.post("/api/accounts", status_code=201, dependencies=[Depends(authenticated)])
 async def connect_account(payload: AccountInput, request: Request):
     data = payload.model_dump()
+    if not data["password"]:
+        raise HTTPException(422, "Password is required.")
     data["email"] = data["email"].lower()
     data["country_code"] = data["country_code"].upper()
+    data["verification_code"] = ""
     account = Account(
         label=data["label"],
         provider=data["provider"],
@@ -401,32 +416,63 @@ async def reconnect_account(account_id: str, payload: AccountInput, request: Req
             raise HTTPException(422, "Connect a separate account to use a different provider.")
         if account.email != data["email"]:
             raise HTTPException(422, "Connect a separate account to use a different email.")
-        # Update atomically against refresh claims, preserving all polling/backoff deadlines.
-        changed = db.execute(
-            update(Account)
-            .where(
-                Account.id == account_id,
-                Account.lease_until <= now(),
-            )
-            .values(
-                label=data["label"],
-                country_code=data["country_code"],
-                time_zone=data["time_zone"],
-                credentials=request.app.state.vault.seal(data),
-                tokens=None,
-                status="pending",
-                error=None,
-                lease_token=None,
-                lease_until=0,
-            )
-        ).rowcount
-        if not changed:
+        if not data["password"]:
+            existing_creds = request.app.state.vault.open(account.credentials)
+            data["password"] = existing_creds.get("password", "")
+        if not data["password"]:
+            raise HTTPException(422, "Password is required.")
+        has_verification_code = bool(data.get("verification_code"))
+        existing_tokens = (
+            request.app.state.vault.open(account.tokens) if account.tokens else None
+        )
+        has_pending_2fa = isinstance(existing_tokens, dict) and "pending_2fa" in existing_tokens
+        preserved_tokens = (
+            account.tokens if has_verification_code and has_pending_2fa else None
+        )
+        # Update atomically against refresh claims, preserving all polling/backoff deadlines
+        # unless completing an interactive verification challenge or reconnecting from auth_error.
+        reset_poll_deadline = has_verification_code or account.status == "auth_error"
+        values = dict(
+            label=data["label"],
+            country_code=data["country_code"],
+            time_zone=data["time_zone"],
+            credentials=request.app.state.vault.seal(data),
+            tokens=preserved_tokens,
+            status="pending",
+            error=None,
+            lease_token=None,
+            lease_until=0,
+        )
+        if reset_poll_deadline:
+            values["next_poll_at"] = 0
+        try:
+            changed = db.execute(
+                update(Account)
+                .where(
+                    Account.id == account_id,
+                    Account.lease_until <= now(),
+                )
+                .values(**values)
+            ).rowcount
+            if not changed:
+                db.rollback()
+                raise HTTPException(409, "A refresh is running. Try again when it finishes.")
+            db.commit()
+        except IntegrityError as exc:
             db.rollback()
-            raise HTTPException(409, "A refresh is running. Try again when it finishes.")
-        db.commit()
-    await provider_operation(
-        request, request.app.state.poller.refresh(account_id, actuate_warnings=False)
-    )
+            raise HTTPException(409, "This account is already connected.") from exc
+    try:
+        await provider_operation(
+            request, request.app.state.poller.refresh(account_id, actuate_warnings=False)
+        )
+    finally:
+        if has_verification_code:
+            with request.app.state.sessions() as db:
+                saved = db.get(Account, account_id)
+                if saved is not None:
+                    cleaned = {**data, "verification_code": ""}
+                    saved.credentials = request.app.state.vault.seal(cleaned)
+                    db.commit()
     with request.app.state.sessions() as db:
         saved = db.get(Account, account_id)
         if saved is None:
@@ -490,7 +536,7 @@ def device_view(device: Device, account: Account, ctx) -> dict:
         "supported": device.supported,
         "capabilities": device.capabilities,
         "controls": device.controls,
-        "control_available": account.provider == "vesync"
+        "control_available": account.provider in SUPPORTED_PROVIDERS
         and account.status != "auth_error"
         and not (account.status == "rate_limited" and account.next_poll_at > current),
         "control_retry_at": timestamp(account.next_control_at),
@@ -507,7 +553,7 @@ class ControlInput(BaseModel):
     power: StrictBool | None = None
     mode: Literal["auto", "sleep"] | None = None
     fan_level: StrictInt | None = None
-    display: StrictBool | None = None
+    display: StrictBool | Literal["on", "off", "bright", "dim"] | None = None
 
     @model_validator(mode="after")
     def one_control(self):
@@ -530,17 +576,22 @@ async def control_device(device_id: str, payload: ControlInput, request: Request
 async def control(ctx, device_id: str, payload: ControlInput, actor: str):
     """Direct control shared by the UI and agent tools; power/mode/fan changes pause rules."""
     if payload.display is not None:
+        display_mode = (
+            ("on" if payload.display else "off")
+            if isinstance(payload.display, bool)
+            else payload.display
+        )
         return await update_device_display_settings(
             ctx,
             device_id,
-            DeviceDisplaySettingsInput(mode="on" if payload.display else "off"),
+            DeviceDisplaySettingsInput(mode=display_mode),
         )
     with ctx.sessions() as db:
         device = db.get(Device, device_id)
         if device is None:
             raise HTTPException(404, "Device not found.")
         account = db.get(Account, device.account_id)
-        if account.provider != "vesync":
+        if account.provider not in SUPPORTED_PROVIDERS:
             raise HTTPException(422, "This provider does not support device controls.")
         options = device.controls
         if (
@@ -623,19 +674,27 @@ async def update_device_display_settings(
             raise HTTPException(404, "Device not found.")
         account = db.get(Account, device.account_id)
         options = device.controls or {}
-        if not device.supported or account.provider != "vesync" or not options.get("display"):
+        if (
+            not device.supported
+            or account.provider not in SUPPORTED_PROVIDERS
+            or not options.get("display")
+        ):
             raise HTTPException(422, "This control is not supported by the device.")
         supported_modes = options.get("display_modes", ["manual"])
-        if payload.mode == "warnings_only" and "warnings_only" not in supported_modes:
+        display_states = options.get("display_states") or ["on", "off"]
+        has_warning_modes = any(mode in WARNING_DISPLAY_MODES for mode in supported_modes)
+        if payload.mode in WARNING_DISPLAY_MODES and payload.mode not in supported_modes:
             raise HTTPException(422, "This display mode is not supported by the device.")
+        if payload.mode in PHYSICAL_DISPLAY_STATES and payload.mode not in display_states:
+            raise HTTPException(422, "This control is not supported by the device.")
         if (
             "warning_threshold" in payload.model_fields_set
             and payload.warning_threshold is not None
-            and "warnings_only" not in supported_modes
+            and not has_warning_modes
         ):
             raise HTTPException(422, "This device does not support air quality display warnings.")
         needs_control = (
-            payload.mode in {"on", "off"}
+            payload.mode in PHYSICAL_DISPLAY_STATES
             and device.state.get("display") != payload.mode
         )
         if needs_control:
@@ -648,16 +707,23 @@ async def update_device_display_settings(
                 device.warning_threshold = payload.warning_threshold
             if "mode" in payload.model_fields_set:
                 device.display_mode = (
-                    "warnings_only" if payload.mode == "warnings_only" else "manual"
+                    payload.mode if payload.mode in WARNING_DISPLAY_MODES else "manual"
                 )
             db.commit()
             return {
                 **device_view(device, account, ctx),
                 "control_confirmed": True,
             }
+    command_display: bool | str = (
+        True
+        if payload.mode == "on"
+        else False
+        if payload.mode == "off"
+        else str(payload.mode)
+    )
     result = await bounded_operation(
         ctx,
-        ctx.poller.queued_control(device_id, DeviceCommand(display=payload.mode == "on")),
+        ctx.poller.queued_control(device_id, DeviceCommand(display=command_display)),
     )
     if "warning_threshold" in payload.model_fields_set and result.status == "controlled":
         with ctx.sessions() as db:
@@ -678,7 +744,7 @@ async def refresh_status(ctx, device_id: str):
         if device is None:
             raise HTTPException(404, "Device not found.")
         account = db.get(Account, device.account_id)
-        if not device.supported or account.provider != "vesync":
+        if not device.supported or account.provider not in SUPPORTED_PROVIDERS:
             raise HTTPException(422, "This device does not support status retrieval.")
     result = await bounded_operation(ctx, ctx.poller.control(device_id, None))
     return control_response(device_id, result, ctx)

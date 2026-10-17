@@ -5,7 +5,7 @@ from sqlalchemy import Integer, cast, delete, func, select
 from climate_control.db import DeviceReading
 
 RETENTION_SECONDS = 30 * 86400
-METRICS = ("pm25", "pm1", "pm10", "air_quality")
+METRICS = ("pm25", "pm1", "pm10", "air_quality", "temperature", "humidity")
 QUALITY_LEVELS = {"excellent": 1, "very good": 1, "good": 2, "moderate": 3, "poor": 4, "bad": 4}
 SETTINGS = ("power", "mode", "fan_level", "reported_fan_level")
 
@@ -47,12 +47,14 @@ def record_reading(db, device, snapshot, current):
         value = snapshot.state.get(metric) if metric in snapshot.capabilities else None
         if metric == "air_quality":
             value = QUALITY_LEVELS.get(str(value).lower())
+        min_val = -50 if metric == "temperature" else 0
+        max_val = 100 if metric in {"temperature", "humidity"} else 10000
         values[metric] = (
             float(value)
             if isinstance(value, (int, float))
             and not isinstance(value, bool)
             and math.isfinite(value)
-            and value >= 0
+            and min_val <= value <= max_val
             else None
         )
     values.update(observed_settings(snapshot))

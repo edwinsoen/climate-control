@@ -24,9 +24,10 @@ Limits: 64 rules, 12 conditions and 14 time windows per rule, 32 review triggers
   windows belong to their starting weekday; equal start/end means the whole day.
   Windows use the ruleset's IANA timezone. Repeated DST hours match twice; skipped
   hours are not evaluated. Scheduler cadence bounds transition precision.
-- Device sources use an internal `device_id` and `pm25`, `pm1`, `pm10`, or
-  `air_quality`. PM units are µg/m³; quality ranks are 1 excellent/very good,
-  2 good, 3 moderate, 4 poor/bad. Outdoor sources use the selected station and
+- Device sources use an internal `device_id` and `pm25`, `pm1`, `pm10`,
+  `air_quality`, `temperature`, or `humidity`. PM units are µg/m³; quality ranks
+  are 1 excellent/very good, 2 good, 3 moderate, 4 poor/bad; temperature is °C;
+  humidity is %. Outdoor sources use the selected station and
   `aqi`, `pm25_aqi`, or `pm10_aqi`, all in AQI units. Never compare outdoor indices
   as indoor concentrations. Device freshness uses retrieval time; outdoor
   freshness uses measurement time, with the app's existing limits.

@@ -14,14 +14,24 @@ class StrictModel(BaseModel):
 class Source(StrictModel):
     kind: Literal["device", "outdoor"]
     device_id: str | None = Field(default=None, min_length=1, max_length=36)
-    metric: Literal["pm25", "pm1", "pm10", "air_quality", "aqi", "pm25_aqi", "pm10_aqi"]
+    metric: Literal[
+        "pm25",
+        "pm1",
+        "pm10",
+        "air_quality",
+        "temperature",
+        "humidity",
+        "aqi",
+        "pm25_aqi",
+        "pm10_aqi",
+    ]
 
     @model_validator(mode="after")
     def valid_source(self):
         metrics = (
             {"aqi", "pm25_aqi", "pm10_aqi"}
             if self.kind == "outdoor"
-            else {"pm25", "pm1", "pm10", "air_quality"}
+            else {"pm25", "pm1", "pm10", "air_quality", "temperature", "humidity"}
         )
         if self.metric not in metrics or (self.kind == "device") != bool(self.device_id):
             raise ValueError("Use a device ID and indoor metric, or an outdoor AQI metric.")
@@ -34,14 +44,19 @@ class Source(StrictModel):
 class Condition(StrictModel):
     source: Source
     test: Literal["range", "available", "unavailable"] = "range"
-    lower: float | None = Field(default=None, ge=0)
-    upper: float | None = Field(default=None, ge=0)
+    lower: float | None = Field(default=None, ge=-50)
+    upper: float | None = Field(default=None, ge=-50)
 
     @model_validator(mode="after")
     def bounds(self):
+        min_bound = -50 if self.source.metric == "temperature" else 0
         if self.test == "range":
             if self.lower is None and self.upper is None:
                 raise ValueError("A range needs at least one bound.")
+            if (self.lower is not None and self.lower < min_bound) or (
+                self.upper is not None and self.upper < min_bound
+            ):
+                raise ValueError("Bounds for this metric cannot be negative.")
             if self.lower is not None and self.upper is not None and self.lower >= self.upper:
                 raise ValueError("The upper bound must exceed the lower bound.")
         elif self.lower is not None or self.upper is not None:
@@ -91,8 +106,8 @@ class Trigger(StrictModel):
     id: str = Field(min_length=1, max_length=80)
     kind: Literal["above", "below", "sustained", "not_improving", "availability", "failures"]
     source: Source | None = None
-    threshold: float | None = Field(default=None, ge=0)
-    reset: float | None = Field(default=None, ge=0)
+    threshold: float | None = Field(default=None, ge=-50)
+    reset: float | None = Field(default=None, ge=-50)
     readings: int = Field(default=3, ge=2, le=100)
     window_seconds: int = Field(default=1800, ge=60, le=86400)
     improvement: float | None = Field(default=None, gt=0)
@@ -101,6 +116,13 @@ class Trigger(StrictModel):
     def parameters(self):
         if self.kind != "failures" and self.source is None:
             raise ValueError("This trigger needs a source.")
+        min_bound = (
+            -50 if self.source is not None and self.source.metric == "temperature" else 0
+        )
+        if (self.threshold is not None and self.threshold < min_bound) or (
+            self.reset is not None and self.reset < min_bound
+        ):
+            raise ValueError("Thresholds for this metric cannot be negative.")
         if self.kind in {"above", "below", "sustained", "not_improving"}:
             if self.threshold is None:
                 raise ValueError("This trigger needs a threshold.")

@@ -43,6 +43,7 @@ frontend/*.tsbuildinfo
 *.egg-info/
 dist/
 .DS_Store
+.vscode/
 .terraform/
 *.tfstate
 *.tfstate.*

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { ConnectionForm, type AccountConnection } from './accounts/ConnectionForm'
 import { AccountCard } from './accounts/AccountCard'
 import type { Account } from './accounts/types'
-import { AirQualityChart } from './devices/AirQualityChart'
+import { AirQualityChart, type ChartMetric } from './devices/AirQualityChart'
 import { DeviceControls, WARNING_THRESHOLD_OPTIONS, type ControlOptions, type DeviceDisplay, type WarningThresholdId } from './devices/DeviceControls'
 import { AutomationPage, type AutomationSummary } from './devices/AutomationPage'
 import { AgentAccess } from './agent/AgentAccess'
@@ -47,7 +47,18 @@ function ago(value: string | null): string {
   return `${Math.floor(seconds / 86400)} days ago`
 }
 
+const DEVICE_CHART_METRICS: { id: ChartMetric; label: string; unit: string }[] = [
+  { id: 'pm25', label: 'PM2.5', unit: 'µg/m³' },
+  { id: 'pm10', label: 'PM10', unit: 'µg/m³' },
+  { id: 'pm1', label: 'PM1', unit: 'µg/m³' },
+  { id: 'temperature', label: 'Temperature', unit: '°C' },
+  { id: 'humidity', label: 'Humidity', unit: '%' },
+]
+
 function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: string, options?: RequestInit) => Promise<T>; onChange: (device: Device) => void }) {
+  const [chartMetric, setChartMetric] = useState<ChartMetric>('pm25')
+  const availableChartMetrics = DEVICE_CHART_METRICS.filter((item) => device.capabilities.includes(item.id))
+  const activeMetric = availableChartMetrics.find((item) => item.id === chartMetric) ?? availableChartMetrics[0] ?? DEVICE_CHART_METRICS[0]
   const offline = device.state.connectivity === 'offline'
   const status = !device.supported ? 'Unsupported' : offline ? 'Offline' : device.stale ? 'Stale' : 'Connected'
   const reading = (key: string, suffix = '') => {
@@ -75,8 +86,10 @@ function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: 
         <div><dt>Air quality</dt><dd>{reading('air_quality')}</dd></div>
         <div><dt>Filter remaining</dt><dd data-testid="device-filter-life">{reading('filter_life', '%')}</dd></div>
         {device.capabilities.includes('display') && <div><dt>Display</dt><dd data-testid="device-display-status">{reading('display')}</dd></div>}
-        {device.capabilities.includes('pm1') && <div><dt>PM1</dt><dd>{reading('pm1', ' µg/m³')}</dd></div>}
-        {device.capabilities.includes('pm10') && <div><dt>PM10</dt><dd>{reading('pm10', ' µg/m³')}</dd></div>}
+        {device.capabilities.includes('pm1') && <div><dt>PM1</dt><dd data-testid="device-pm1">{reading('pm1', ' µg/m³')}</dd></div>}
+        {device.capabilities.includes('pm10') && <div><dt>PM10</dt><dd data-testid="device-pm10">{reading('pm10', ' µg/m³')}</dd></div>}
+        {device.capabilities.includes('temperature') && <div><dt>Temperature</dt><dd data-testid="device-temperature">{reading('temperature', ' °C')}</dd></div>}
+        {device.capabilities.includes('humidity') && <div><dt>Humidity</dt><dd data-testid="device-humidity">{reading('humidity', '%')}</dd></div>}
       </dl>
     </>}
     {device.error && <p className="inline-error">{device.error}</p>}
@@ -87,7 +100,12 @@ function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: 
       {(device.automation?.paused_until ?? 0) > Date.now() / 1000 && <p className="subtle">Paused until {new Date(device.automation!.paused_until * 1000).toLocaleTimeString()}</p>}
       {device.automation?.enabled && device.automation.summary?.decision && <p className="subtle">{device.automation.summary.decision.explanation}</p>}
     </div>}
-    <AirQualityChart deviceId={device.id} name={device.name} capabilities={device.capabilities} fetchHistory={api} />
+    <AirQualityChart deviceId={device.id} name={device.name} capabilities={device.capabilities} fetchHistory={api}
+      metric={activeMetric.id} unit={activeMetric.unit}
+      metricSelector={availableChartMetrics.length > 1 && <select aria-label={`History metric for ${device.name}`} data-testid="device-history-metric"
+        value={activeMetric.id} onChange={(event) => setChartMetric(event.target.value as ChartMetric)}>
+        {availableChartMetrics.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+      </select>} />
   </article>
 }
 
@@ -206,7 +224,13 @@ function App() {
       const account = await api<Account>(editing ? `/api/accounts/${editing.id}` : '/api/accounts', {
         method: editing ? 'PUT' : 'POST', body: JSON.stringify(connection),
       })
-      setEditing(undefined); await load()
+      await load()
+      if (account.error?.includes('verification code')) {
+        setEditing(account)
+        setError(account.error)
+        return
+      }
+      setEditing(undefined)
       setNotice(account.error ?? (account.status === 'pending' ? 'Connecting account…' : 'Account connected.'))
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }

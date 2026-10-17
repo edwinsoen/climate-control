@@ -18,7 +18,7 @@ from climate_control.agent.tools import device_actions
 from climate_control.db import DeviceReading, OutdoorReading
 
 PROFILE_DAYS = 7
-INDOOR_METRICS = ("pm25", "pm1", "pm10", "air_quality")
+INDOOR_METRICS = ("pm25", "pm1", "pm10", "air_quality", "temperature", "humidity")
 OUTDOOR_METRICS = ("aqi", "pm25_aqi", "pm10_aqi")
 
 

@@ -35,6 +35,7 @@ pacing, retries, and confirmation. There is no expression language.
   `unavailable` tests to branch on data loss explicitly.
 - **Units differ by source.** Indoor `pm25`, `pm1`, and `pm10` are µg/m³.
   Indoor `air_quality` is a rank: 1 excellent, 2 good, 3 moderate, 4 poor.
+  Indoor `temperature` is °C and `humidity` is %.
   Outdoor `aqi`, `pm25_aqi`, and `pm10_aqi` are AQI index values. Never compare
   an outdoor AQI with an indoor concentration threshold.
 - **Actions**: `{"power":"hold"}` keeps the current setting, `{"power":"off"}`,

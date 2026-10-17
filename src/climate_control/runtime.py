@@ -12,6 +12,7 @@ from climate_control.outdoor import OutdoorCollector
 from climate_control.polling import Poller
 from climate_control.providers.aqicn import AQICNProvider
 from climate_control.providers.vesync import VeSyncProvider
+from climate_control.providers.xiaomi import XiaomiProvider
 from climate_control.security import Vault
 
 
@@ -32,11 +33,15 @@ def create_runtime(settings: WorkerSettings, provider=None, outdoor_provider=Non
         settings,
         outdoor_provider or AQICNProvider(settings.aqicn_api_token.get_secret_value()),
     )
+    default_providers = {
+        "vesync": VeSyncProvider(settings.request_spacing_seconds),
+        "xiaomi": XiaomiProvider(settings.request_spacing_seconds),
+    }
     poller = Poller(
         sessions,
         settings,
         vault,
-        provider or VeSyncProvider(settings.request_spacing_seconds),
+        provider or default_providers,
         outdoor=outdoor,
     )
     if worker:

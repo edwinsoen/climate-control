@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 
-export type DisplayMode = 'manual' | 'warnings_only'
-export type DisplayOption = 'on' | 'off' | 'warnings_only'
+export type DisplayMode = 'manual' | 'warnings_only' | 'warnings_only_bright' | 'warnings_only_dim'
+export type PhysicalDisplayState = 'on' | 'off' | 'bright' | 'dim'
+export type DisplayOption = PhysicalDisplayState | 'warnings_only' | 'warnings_only_bright' | 'warnings_only_dim'
 export type WarningThresholdId = 'who_2021_annual' | 'who_2021_24h' | 'who_2005_annual' | 'who_2005_24h'
 export type DeviceDisplay = {
   state?: string | null
@@ -12,10 +13,11 @@ export type DeviceDisplay = {
 export type DisplayChange = { mode?: DisplayOption | DisplayMode; warning_threshold?: WarningThresholdId | null }
 export type ControlOptions = {
   power?: boolean; modes?: string[]; fan_levels?: number[]
-  display?: boolean; display_modes?: DisplayMode[]
+  display?: boolean; display_states?: PhysicalDisplayState[]; display_modes?: DisplayMode[]
 }
 type Command = { power: boolean } | { mode: string } | { fan_level: number }
 const OPTIMISTIC_CONFIRMATION_MS = 90_000
+const WARNING_MODES = new Set<string>(['warnings_only', 'warnings_only_bright', 'warnings_only_dim'])
 type ControlledDevice = {
   name: string; controls: ControlOptions; control_available: boolean; control_retry_at: string | null
   state: Record<string, string | number | null>
@@ -24,8 +26,12 @@ type ControlledDevice = {
 
 const DISPLAY_LABELS: Record<DisplayOption, string> = {
   on: 'On',
+  bright: 'Bright',
+  dim: 'Dim',
   off: 'Off',
   warnings_only: 'Warnings only',
+  warnings_only_bright: 'Warnings only (bright)',
+  warnings_only_dim: 'Warnings only (dim)',
 }
 
 export const WARNING_THRESHOLD_OPTIONS: { id: WarningThresholdId; label: string; detail: string }[] = [
@@ -66,9 +72,9 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
       setOptimistic(null); setError('')
     }
     if (!pending && optimisticDisplay && (
-      optimisticDisplay === 'warnings_only'
-        ? device.display?.mode === 'warnings_only'
-        : device.display?.mode !== 'warnings_only' && device.state.display === optimisticDisplay
+      WARNING_MODES.has(optimisticDisplay)
+        ? device.display?.mode === optimisticDisplay
+        : !WARNING_MODES.has(device.display?.mode ?? '') && device.state.display === optimisticDisplay
     )) {
       setOptimisticDisplay(null); setError('')
     }
@@ -85,8 +91,12 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
   const options = device.controls ?? {}
   const modes = ['auto', 'sleep'].filter((mode) => options.modes?.includes(mode))
   const levels = options.fan_levels ?? []
+  const physicalStates: PhysicalDisplayState[] = options.display_states ?? ['on', 'off']
+  const warningModes = (options.display_modes ?? []).filter(
+    (mode): mode is 'warnings_only' | 'warnings_only_bright' | 'warnings_only_dim' => WARNING_MODES.has(mode)
+  )
   const displayOptions: DisplayOption[] = options.display
-    ? ['on', 'off', ...(options.display_modes?.includes('warnings_only') ? ['warnings_only' as const] : [])]
+    ? [...physicalStates, ...warningModes]
     : []
   const state = { ...device.state }
   if (optimistic && 'power' in optimistic) state.power = optimistic.power ? 'on' : 'off'
@@ -99,9 +109,9 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
   const selected = state.mode === 'manual' && levels.includes(Number(state.fan_level))
     ? `fan-${state.fan_level}` : modes.includes(String(state.mode)) ? String(state.mode) : ''
   const rawDisplay = optimisticDisplay ?? (
-    device.display?.mode === 'warnings_only'
-      ? 'warnings_only'
-      : state.display === 'on' || state.display === 'off' ? state.display : ''
+    device.display?.mode && WARNING_MODES.has(device.display.mode)
+      ? device.display.mode
+      : physicalStates.includes(state.display as PhysicalDisplayState) ? (state.display as PhysicalDisplayState) : ''
   )
   const selectedDisplay = displayOptions.includes(rawDisplay as DisplayOption) ? rawDisplay : ''
   const selectedThreshold = device.display?.warning_threshold ?? ''
@@ -122,15 +132,16 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
 
   async function changeDisplay(change: DisplayChange) {
     if (disabled || !onDisplayChange) return
+    const isWarningMode = Boolean(change.mode && WARNING_MODES.has(change.mode))
     setPending(true); if (change.mode && change.mode !== 'manual') setOptimisticDisplay(change.mode); setError('')
     try {
       const next = await onDisplayChange(change)
       const nextDeadline = next.retryAt ? new Date(next.retryAt).getTime() : 0
       if (nextDeadline > Date.now()) setRetryAt(nextDeadline)
-      if (next.confirmed || change.mode === 'warnings_only' || !change.mode) setOptimisticDisplay(null)
+      if (next.confirmed || isWarningMode || !change.mode) setOptimisticDisplay(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'The change could not be completed.')
-      if (change.mode && change.mode !== 'warnings_only') setRetryAt(Date.now() + 5000)
+      if (change.mode && !isWarningMode) setRetryAt(Date.now() + 5000)
       setOptimisticDisplay(null)
     } finally { setPending(false) }
   }
@@ -158,7 +169,7 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
         {displayOptions.map((mode) => <option data-testid="device-display-option" key={mode} value={mode}>{DISPLAY_LABELS[mode]}</option>)}
       </select>
     </label>}
-    {options.display && selectedDisplay === 'warnings_only' && <label className="device-control-row"><span>Warning target</span>
+    {options.display && WARNING_MODES.has(selectedDisplay) && <label className="device-control-row"><span>Warning target</span>
       <select data-testid="device-display-threshold" aria-label={`Warning target for ${device.name}`} value={selectedThreshold} disabled={disabled}
         onChange={(event) => void changeDisplay({ warning_threshold: (event.target.value || null) as WarningThresholdId | null })}>
         <option value="">Global default</option>

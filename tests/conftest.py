@@ -40,7 +40,77 @@ class FakeProvider:
             raise ProviderError("auth")
         return self.snapshot(credentials)
 
+    def _key(self, credentials) -> str:
+        provider = credentials.get("provider", "vesync")
+        if provider == "vesync":
+            return credentials["email"]
+        country = credentials.get("country_code", "")
+        return f"{provider}:{credentials['email']}:{country}"
+
+    def _state(self, credentials) -> dict:
+        key = self._key(credentials)
+        return {
+            **self.states.get(credentials["email"], {}),
+            **self.states.get(key, {}),
+        }
+
     def snapshot(self, credentials):
+        if credentials.get("provider") == "xiaomi":
+            return PollResult(
+                [
+                    DeviceSnapshot(
+                        provider_id="xiaomi-provider-id",
+                        name=f"{credentials['label']} purifier",
+                        model="Smart Air Purifier 4 Pro",
+                        capabilities=[
+                            "power",
+                            "mode",
+                            "fan_level",
+                            "pm25",
+                            "pm10",
+                            "temperature",
+                            "humidity",
+                            "filter_life",
+                            "air_quality",
+                            "display",
+                        ],
+                        controls={
+                            "power": True,
+                            "modes": ["auto", "sleep"],
+                            "fan_levels": list(range(1, 15)),
+                            "display": True,
+                            "display_states": ["bright", "dim", "off"],
+                            "display_modes": [
+                                "manual",
+                                "warnings_only_bright",
+                                "warnings_only_dim",
+                            ],
+                        },
+                        state={
+                            "connectivity": "online",
+                            "power": "on",
+                            "mode": "manual",
+                            "fan_level": 6,
+                            "reported_fan_level": 6,
+                            "pm25": 11,
+                            "pm10": 24,
+                            "temperature": 24.5,
+                            "humidity": 55,
+                            "filter_life": 92,
+                            "air_quality": "excellent",
+                            "display": "bright",
+                            **self._state(credentials),
+                        },
+                        retrieved_at=time.time(),
+                    ),
+                ],
+                {
+                    "user_id": "xiaomi-user",
+                    "ssecurity": "xiaomi-ssec",
+                    "service_token": "provider-secret-token",
+                    "country_code": credentials.get("country_code", "SG"),
+                },
+            )
         return PollResult(
             [
                 DeviceSnapshot(
@@ -72,7 +142,7 @@ class FakeProvider:
                         "filter_life": 86,
                         "air_quality": "good",
                         "display": "on",
-                        **self.states.get(credentials["email"], {}),
+                        **self._state(credentials),
                     },
                     retrieved_at=time.time(),
                 ),
@@ -92,7 +162,8 @@ class FakeProvider:
             if isinstance(result, Exception):
                 raise result
             return result
-        state = self.states.setdefault(credentials["email"], {})
+        key = self._key(credentials)
+        state = self.states.setdefault(key, {})
         if command.power is not None:
             state["power"] = "on" if command.power else "off"
         if command.mode is not None:
@@ -100,7 +171,11 @@ class FakeProvider:
         if command.fan_level is not None:
             state.update(mode="manual", fan_level=command.fan_level)
         if command.display is not None:
-            state["display"] = "on" if command.display else "off"
+            state["display"] = (
+                ("on" if command.display else "off")
+                if isinstance(command.display, bool)
+                else command.display
+            )
         return self.snapshot(credentials)
 
     async def status(self, credentials, tokens, provider_id):

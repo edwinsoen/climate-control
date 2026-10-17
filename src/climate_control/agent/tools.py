@@ -126,7 +126,7 @@ def device_actions(device: dict) -> dict:
         "fan": [*controls.get("fan_levels", []), *controls.get("modes", [])],
         "metrics": [
             metric
-            for metric in ("pm25", "pm1", "pm10", "air_quality")
+            for metric in ("pm25", "pm1", "pm10", "air_quality", "temperature", "humidity")
             if metric in (device.get("capabilities") or [])
         ],
     }
@@ -291,12 +291,13 @@ async def set_device_display(
     device_id: str,
     mode: DisplaySelection,
 ) -> dict:
-    """Control a device's display (`on`, `off`) or set its display mode (`manual`, `warnings_only`).
+    """Control a device's display or set its display mode.
 
-    `on` and `off` switch the display mode to `manual` and only send a provider command if the
-    physical display is not already in that state (the device must be on). `manual` stops
-    `warnings_only` without toggling the physical display. `warnings_only` evaluates and
-    actuates on new device readings. Does not pause automation rules.
+    `on`, `off`, `bright`, and `dim` switch the display mode to `manual` and only send a provider
+    command if the physical display is not already in that state (the device must be on). `manual`
+    stops warning display modes without toggling the physical display. `warnings_only`,
+    `warnings_only_bright`, and `warnings_only_dim` evaluate and actuate on new device readings.
+    Does not pause automation rules.
     """
     return await update_device_display_settings(
         ctx, device_id, DeviceDisplaySettingsInput(mode=mode)
