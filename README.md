@@ -23,13 +23,17 @@ Sign in and connect an account already paired with purifiers in the VeSync or Xi
 
 ## Deploy to GCP
 
-After the one-time Terraform bootstrap, Secret Manager setup, and Cloud Build trigger configuration in the [deployment guide](docs/DEPLOYMENT.md), pushes to `main` build and deploy automatically through [`cloudbuild.yaml`](cloudbuild.yaml), or you can deploy manually with:
+One-time setup, detailed in the [deployment guide](docs/DEPLOYMENT.md): bootstrap with `uv run python -m scripts.deploy_gcp --bootstrap-only`, then add `DATABASE_URL` (an external PostgreSQL URI) and login credentials to Secret Manager.
+
+**Cloud Build.** Create a push trigger on `main` that uses [`cloudbuild.yaml`](cloudbuild.yaml) and the `climate-control-cloudbuild` service account. Every push to `main` then deploys. Settings that aren't defaults, such as `_SITE_ID` or `_AGENT_PROVIDER`, go in trigger substitutions. Secrets never do.
+
+**Local.** Deploy from your checkout:
 
 ```sh
-invoke deploy
+uv run invoke deploy            # add --dry-run to preview the target and secret versions
 ```
 
-Each release builds the API and UI, runs migrations, publishes Firebase Hosting, deploys the rule planner to Agent Runtime (using Gemini on Agent Platform by default), and enables the minute worker and five-minute planner schedules. `invoke deploy-agent` can also update the Agent Runtime deployment standalone. Use `uv run invoke deploy` if Invoke is not installed globally, or `invoke deploy --dry-run` to preview the target and secret versions. The deployment uses an external PostgreSQL URI.
+Both paths share Terraform state in GCS and run the same release. It builds the API and UI, runs migrations, and publishes Firebase Hosting. It then deploys the rule planner to Agent Runtime (Gemini on Agent Platform by default) and enables the minute worker and five-minute planner schedules. If a release fails, the schedules stay paused until the next successful one. `invoke deploy-agent` updates the planner on its own.
 
 ## Develop and verify
 
