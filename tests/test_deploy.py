@@ -58,6 +58,7 @@ def deployment(tmp_path, monkeypatch):
         "resources": [],
         "failure": None,
         "settings": {"app_url": None},
+        "console_prefix": "",
         "missing_secret": None,
         "readiness": [],
         "repository": repository,
@@ -79,7 +80,7 @@ def deployment(tmp_path, monkeypatch):
             if "show" in command:
                 return json.dumps({"values": {"root_module": {"resources": session["resources"]}}})
             if "console" in command:
-                return json.dumps(json.dumps(session["settings"]))
+                return session["console_prefix"] + json.dumps(json.dumps(session["settings"]))
             if "apply" in command and command[1] == f"-chdir={runtime}":
                 variables = json.loads(deploy.VARIABLES.read_text())
                 session["applies"].append(variables)
@@ -223,6 +224,13 @@ def test_agent_runtime_failure_keeps_previous_planner_and_resumes_schedules(
     _, _, active = deployment["applies"]
     assert not active["scheduler_paused"]
     assert active["agent_runtime_resource"] == previous
+
+
+def test_settings_ignore_state_lock_message_before_console_value(deployment):
+    deployment["console_prefix"] = "Acquiring state lock. This may take a few moments...\n"
+    deployment["settings"] = {"app_url": "https://climate.example.com"}
+    deploy.deploy()
+    assert deployment["applies"][-1]["app_url"] == "https://climate.example.com"
 
 
 def test_update_retains_api_and_secret_versions_until_migrations_succeed(deployment):
