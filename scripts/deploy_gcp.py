@@ -157,7 +157,8 @@ def settings_from_terraform(variables):
             capture=True,
             input="jsonencode({app_url = var.app_url})\n",
         )
-    return json.loads(json.loads(result))
+    # Slow GCS locks print "Acquiring state lock..." to stdout before the value.
+    return json.loads(json.loads(result.splitlines()[-1]))
 
 
 def platform_for_project(
