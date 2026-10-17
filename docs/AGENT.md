@@ -56,8 +56,8 @@ Switching a device to agent ownership, or clicking **Request review**, starts pl
 | Mode | Planner process |
 | --- | --- |
 | Local `serve` | An in-process loop beside the poller, checking every 30 seconds. It never delays rule execution. |
-| GCP | The `plan` Cloud Run Job, run every five minutes. It needs only `DATABASE_URL` and model access, not the encryption key or provider credentials. |
-| Remote (`AGENT_RUNTIME=remote`) | The same job queries the planner deployed on Agent Runtime (`AGENT_RUNTIME_RESOURCE`). That agent reaches the app's tools through `/mcp` with a read-scoped token. |
+| GCP (`AGENT_RUNTIME=remote`, default) | The `plan` Cloud Run Job, run every five minutes, queries the planner deployed on Agent Runtime (`AGENT_RUNTIME_RESOURCE`). That agent reaches the app's tools through `/mcp` with a read-scoped token (`AGENT_SERVICE_TOKEN`). |
+| Embedded (`AGENT_RUNTIME=embedded`) | When no `AGENT_RUNTIME_RESOURCE` is configured, the `plan` Job runs the planner in-process with `DATABASE_URL` and model access, never the encryption key or provider credentials. |
 
 ## MCP
 
@@ -88,27 +88,20 @@ From ADK:
 
 ```python
 McpToolset(connection_params=StreamableHTTPConnectionParams(
-    url="https://YOUR_APP/mcp", headers={"Authorization": "Bearer cc_..."}))
+    url="https://YOUR_APP/mcp", headers={"Authorization: Bearer cc_..."}))
 ```
 
 ## Deploying to Agent Runtime
 
-The planner runs embedded by default. To run it on Gemini Enterprise Agent Platform Agent Runtime instead:
+GCP releases ([`cloudbuild.yaml`](../cloudbuild.yaml) and `invoke deploy`) deploy the planner to Gemini Enterprise Agent Platform Agent Runtime automatically:
 
-1. Run `invoke deploy` so that the API, `/mcp`, and the planner job exist.
-2. Create a token with only the `read` scope. Add it as a version of the `AGENT_SERVICE_TOKEN` secret.
-3. For OpenRouter, also add `OPENROUTER_API_KEY`.
-4. Run `invoke deploy-agent`, adding `--provider openrouter` and/or `--model ID` if needed.
+1. On the first release, if `AGENT_SERVICE_TOKEN` has no enabled Secret Manager version, the release generates a `cc_…` token, registers its SHA-256 digest in `access_tokens` with the `read` scope during `migrate`, and stores the token in Secret Manager.
+2. For OpenRouter (`_AGENT_PROVIDER=openrouter` or `--provider openrouter`), populate `OPENROUTER_API_KEY` in Secret Manager before deploying.
+3. After the API and Firebase Hosting are ready, the release stages `deploy/agent_runtime/climate_planner` with this package and pinned requirements, deploys or updates the Reasoning Engine with `adk deploy agent_engine --otel_to_cloud` as the `agent` service account, records the resource name in `infra/gcp/runtime/agent.auto.tfvars.json`, and wires `agent_runtime_resource` into the `plan` Job and `api` service.
 
-`invoke deploy-agent` does the following:
-- Stages `deploy/agent_runtime/climate_planner` with this package and pinned requirements.
-- Deploys it with `adk deploy agent_engine --otel_to_cloud` as the `agent` service account.
-- Records the resource name in `infra/gcp/runtime/agent.auto.tfvars.json`.
-- Points the `plan` job at that resource.
+You can also update the Agent Runtime deployment standalone after an initial release with `invoke deploy-agent` (adding `--provider openrouter` and/or `--model ID` if needed).
 
-The deployed agent reads its token and model key from Secret Manager at runtime. Its environment holds only secret resource names.
-
-To return to embedded mode, delete `agent.auto.tfvars.json` and rerun `invoke deploy`. Delete the Agent Runtime resource separately if you no longer need it.
+The deployed agent reads its token and model key from Secret Manager at runtime. Its environment holds only secret resource names. To disable the built-in planner so agent-managed devices wait for an external MCP planner, set `_AGENT_PROVIDER=disabled` on the Cloud Build trigger (or `{"agent_provider": "disabled"}` in `infra/gcp/runtime/agent.auto.tfvars.json`).
 
 ## Telemetry
 
