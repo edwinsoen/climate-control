@@ -235,29 +235,34 @@ def _try_gcloud_json(command):
         return []
 
 
+def state_bucket_exists(platform):
+    return bool(
+        json.loads(
+            run(
+                [
+                    "gcloud",
+                    "storage",
+                    "buckets",
+                    "list",
+                    "--project",
+                    platform["project_id"],
+                    f"--filter=name={platform['state_bucket']}",
+                    "--format=json",
+                ],
+                capture=True,
+            )
+            or "[]"
+        )
+    )
+
+
 def ensure_state_bucket(platform):
     project, region, bucket = (
         platform["project_id"],
         platform["region"],
         platform["state_bucket"],
     )
-    existing = json.loads(
-        run(
-            [
-                "gcloud",
-                "storage",
-                "buckets",
-                "list",
-                "--project",
-                project,
-                f"--filter=name={bucket}",
-                "--format=json",
-            ],
-            capture=True,
-        )
-        or "[]"
-    )
-    if existing:
+    if state_bucket_exists(platform):
         return
     print(f"Creating Terraform state bucket gs://{bucket}...", flush=True)
     run(["gcloud", "services", "enable", "storage.googleapis.com", "--project", project, "--quiet"])
@@ -407,9 +412,11 @@ def bootstrap_inputs():
 
 
 def run_bootstrap(platform, *, dry_run=False):
-    if not dry_run:
-        ensure_state_bucket(platform)
-    init_terraform(BOOTSTRAP, platform["state_bucket"], "bootstrap", dry_run=dry_run)
+    # A preview must not reconfigure backends; state may still be local before the first run.
+    if dry_run:
+        return
+    ensure_state_bucket(platform)
+    init_terraform(BOOTSTRAP, platform["state_bucket"], "bootstrap")
     variables = {
         "project_id": platform["project_id"],
         "region": platform["region"],
@@ -419,10 +426,9 @@ def run_bootstrap(platform, *, dry_run=False):
     }
     tfvars = BOOTSTRAP / "bootstrap.auto.tfvars.json"
     write_json(tfvars, variables)
-    if not dry_run:
-        adopt_existing_bootstrap(platform, variables, state_resources(BOOTSTRAP))
-        print("Updating bootstrap infrastructure...", flush=True)
-        terraform(BOOTSTRAP, "apply", "-input=false", "-auto-approve", f"-var-file={tfvars}")
+    adopt_existing_bootstrap(platform, variables, state_resources(BOOTSTRAP))
+    print("Updating bootstrap infrastructure...", flush=True)
+    terraform(BOOTSTRAP, "apply", "-input=false", "-auto-approve", f"-var-file={tfvars}")
 
 
 def adopt_existing_runtime(platform, variables, current=None):
@@ -801,26 +807,27 @@ def deploy(
         if bootstrap_only:
             run_bootstrap(platform, dry_run=dry_run)
             return
-        repository = (
-            f"{platform['region']}-docker.pkg.dev/{platform['project_id']}/{platform['name']}/app"
-        )
     else:
         inputs = bootstrap_inputs()
-        run_bootstrap(
-            platform_for_project(
-                inputs["project_id"],
-                region=inputs["region"],
-                name=inputs["name"],
-                site_id=inputs["site_id"],
-                state_bucket=state_bucket or inputs["state_bucket"],
-            ),
-            dry_run=dry_run,
+        platform = platform_for_project(
+            inputs["project_id"],
+            region=inputs["region"],
+            name=inputs["name"],
+            site_id=inputs["site_id"],
+            state_bucket=state_bucket or inputs["state_bucket"],
         )
+        run_bootstrap(platform, dry_run=dry_run)
         if bootstrap_only:
             return
-        platform = output(BOOTSTRAP, "platform")
-        repository = output(BOOTSTRAP, "image_repository")
+        if not dry_run:
+            platform = output(BOOTSTRAP, "platform")
+    repository = (
+        f"{platform['region']}-docker.pkg.dev/{platform['project_id']}/{platform['name']}/app"
+    )
     bucket = state_bucket or platform.get("state_bucket", "")
+    if dry_run and bucket and not state_bucket_exists(platform):
+        # Before the first real run, runtime state is still local and the bucket is absent.
+        bucket = ""
     init_runtime(bucket, dry_run=dry_run)
     print("Resolving enabled secret versions (metadata only)...", flush=True)
     versions = discover_versions(platform, dry_run=dry_run)

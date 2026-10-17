@@ -297,7 +297,8 @@ def test_missing_required_secret_stops_before_building(deployment):
 
 
 def test_dry_run_only_reads_metadata(deployment, capsys):
-    deployment["missing_secret"] = "encryption_key"
+    # Upgrading from local state: no GCS state bucket and no bootstrap outputs yet.
+    deployment["missing_secret"] = "climate-control-encryption-key"
     deploy.deploy(dry_run=True)
     output_text = capsys.readouterr().out
     assert '"GOOGLE_ALLOWED_EMAILS": "10"' in output_text
@@ -308,6 +309,10 @@ def test_dry_run_only_reads_metadata(deployment, capsys):
     assert not deployment["readiness"]
     assert all(cmd[0] not in ("npm", "docker", sys.executable) for cmd in deployment["commands"])
     assert all("apply" not in cmd for cmd in deployment["commands"])
+    assert all(f"-chdir={deploy.BOOTSTRAP}" not in cmd for cmd in deployment["commands"])
+    assert ["terraform", f"-chdir={deploy.RUNTIME}", "init", "-input=false"] in deployment[
+        "commands"
+    ]
 
 
 def test_incomplete_google_oauth_secrets_stop_before_building(deployment):
