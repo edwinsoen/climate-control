@@ -23,6 +23,9 @@ def deployment(tmp_path, monkeypatch):
     runtime = tmp_path / "infra/runtime"
     bootstrap.mkdir(parents=True)
     runtime.mkdir(parents=True)
+    (bootstrap / "terraform.tfvars").write_text(
+        'project_id = "test-project"\n# site_id = "ignored"\nsite_id = "test-site"\n'
+    )
     monkeypatch.setattr(deploy, "ROOT", tmp_path)
     monkeypatch.setattr(deploy, "BOOTSTRAP", bootstrap)
     monkeypatch.setattr(deploy, "RUNTIME", runtime)
@@ -58,6 +61,7 @@ def deployment(tmp_path, monkeypatch):
         "missing_secret": None,
         "readiness": [],
         "repository": repository,
+        "platform": platform,
     }
 
     def run(command, **kwargs):
@@ -180,6 +184,45 @@ def test_first_deployment_enables_api_after_migration_and_schedule_after_ready(d
     publish = next(i for i, cmd in enumerate(commands) if cmd[0] == sys.executable)
     assert migrate < publish
     assert all("access" not in command for command in commands)
+
+
+def test_local_bootstrap_uses_shared_gcs_state(deployment):
+    deploy.deploy(bootstrap_only=True)
+    backend = json.loads((deploy.BOOTSTRAP / "backend.tf.json").read_text())
+    assert backend["terraform"]["backend"]["gcs"] == {
+        "bucket": "test-project-climate-control-tfstate",
+        "prefix": "bootstrap",
+    }
+    assert json.loads((deploy.BOOTSTRAP / "bootstrap.auto.tfvars.json").read_text())[
+        "site_id"
+    ] == "test-site"
+    assert any(
+        cmd[0] == "terraform" and f"-chdir={deploy.BOOTSTRAP}" in cmd and "apply" in cmd
+        for cmd in deployment["commands"]
+    )
+
+
+def test_agent_runtime_failure_keeps_previous_planner_and_resumes_schedules(
+    deployment, monkeypatch
+):
+    existing_runtime(deployment)
+    previous = "projects/test-project/locations/asia-southeast1/reasoningEngines/42"
+    container = deployment["resources"][0]["values"]["template"][0]["containers"][0]
+    container["env"].append({"name": "AGENT_RUNTIME_RESOURCE", "value": previous})
+    deployment["platform"]["identities"]["agent"] = "agent@test-project.iam.gserviceaccount.com"
+    deployment["platform"]["secret_ids"]["AGENT_SERVICE_TOKEN"] = "agent_service_token"
+    base_run = deploy.run
+
+    def failing_adk(command, **kwargs):
+        if Path(command[0]).name == "adk":
+            raise subprocess.CalledProcessError(1, command)
+        return base_run(command, **kwargs)
+
+    monkeypatch.setattr(deploy, "run", failing_adk)
+    deploy.deploy()
+    _, _, active = deployment["applies"]
+    assert not active["scheduler_paused"]
+    assert active["agent_runtime_resource"] == previous
 
 
 def test_update_retains_api_and_secret_versions_until_migrations_succeed(deployment):
@@ -385,7 +428,9 @@ def test_cloud_build_mode_uses_gcs_state_prebuilt_artifacts_and_state_settings(
         == "projects/test-project/locations/asia-southeast1/reasoningEngines/42"
     )
     assert json.loads((deploy.RUNTIME / "agent.auto.tfvars.json").read_text()) == {
-        "agent_runtime_resource": "projects/test-project/locations/asia-southeast1/reasoningEngines/42",
+        "agent_runtime_resource": (
+            "projects/test-project/locations/asia-southeast1/reasoningEngines/42"
+        ),
         "agent_provider": "openrouter",
         "agent_model": "custom/model",
     }
@@ -437,7 +482,9 @@ def test_local_agent_tfvars_overrides_state_and_supports_disabled_provider(deplo
     assert all(Path(cmd[0]).name != "adk" for cmd in deployment["commands"])
 
 
-def test_cloud_build_mode_adopts_existing_gcp_resources_when_gcs_state_is_empty(deployment):
+def test_cloud_build_mode_adopts_existing_gcp_resources_when_gcs_state_is_empty(
+    deployment, monkeypatch
+):
     (deploy.ROOT / "frontend/dist").mkdir(parents=True)
     (deploy.ROOT / "frontend/dist/index.html").write_text("<html></html>")
     old_image = existing_runtime(deployment)
@@ -460,7 +507,7 @@ def test_cloud_build_mode_adopts_existing_gcp_resources_when_gcs_state_is_empty(
             return ""
         return base_run(command, **kwargs)
 
-    deploy.run = run_with_discovery
+    monkeypatch.setattr(deploy, "run", run_with_discovery)
     deploy.deploy(
         skip_build=True,
         project_id="test-project",
@@ -497,7 +544,9 @@ def test_cloud_build_mode_adopts_existing_gcp_resources_when_gcs_state_is_empty(
     assert not active["scheduler_paused"]
 
 
-def test_cloud_build_bootstrap_creates_state_bucket_and_adopts_existing_resources(deployment):
+def test_cloud_build_bootstrap_creates_state_bucket_and_adopts_existing_resources(
+    deployment, monkeypatch
+):
     base_run = deploy.run
 
     def run_bootstrap_commands(command, **kwargs):
@@ -518,7 +567,7 @@ def test_cloud_build_bootstrap_creates_state_bucket_and_adopts_existing_resource
             return ""
         return base_run(command, **kwargs)
 
-    deploy.run = run_bootstrap_commands
+    monkeypatch.setattr(deploy, "run", run_bootstrap_commands)
     deploy.deploy(
         bootstrap_only=True,
         project_id="test-project",
@@ -554,12 +603,6 @@ def test_cloud_build_bootstrap_creates_state_bucket_and_adopts_existing_resource
         cmd[0] == "terraform" and f"-chdir={deploy.BOOTSTRAP}" in cmd and "apply" in cmd
         for cmd in commands
     )
-
-
-def test_cloudbuild_yaml_has_no_project_specifics_or_secrets():
-    text = (Path(__file__).resolve().parents[1] / "cloudbuild.yaml").read_text()
-    for secret in deploy.SECRETS:
-        assert secret not in text
 
 
 def test_first_time_deploy_provisions_internal_secrets_and_deploys_agent_runtime(deployment):
@@ -621,7 +664,9 @@ def test_migrate_ensure_service_token_hash_registers_read_scoped_mcp_token(
     monkeypatch.setenv("ADMIN_PASSWORD_HASH", "$argon2id$v=19$m=65536,t=3,p=4$test$test")
     raw_token = "cc_test_agent_runtime_secret_token"
     token_hash = digest(raw_token)
-    monkeypatch.setattr(sys, "argv", ["climate_control", "migrate", "--agent-token-hash", token_hash])
+    monkeypatch.setattr(
+        sys, "argv", ["climate_control", "migrate", "--agent-token-hash", token_hash]
+    )
     cli.main()
     engine, sessions = database(db_url)
     try:

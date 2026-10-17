@@ -390,6 +390,22 @@ def adopt_existing_bootstrap(platform, variables, current=None):
                 pass
 
 
+def bootstrap_inputs():
+    """Read local bootstrap settings so local and Cloud Build runs share one GCS state."""
+    path = BOOTSTRAP / "terraform.tfvars"
+    values = (
+        dict(re.findall(r'^\s*(\w+)\s*=\s*"([^"]*)"', path.read_text(), re.MULTILINE))
+        if path.is_file()
+        else {}
+    )
+    if not values.get("project_id"):
+        raise DeploymentError(f"Set project_id in {path} (see terraform.example.tfvars).")
+    return {
+        key: values.get(key, "")
+        for key in ("project_id", "region", "name", "site_id", "state_bucket")
+    }
+
+
 def run_bootstrap(platform, *, dry_run=False):
     if not dry_run:
         ensure_state_bucket(platform)
@@ -789,10 +805,17 @@ def deploy(
             f"{platform['region']}-docker.pkg.dev/{platform['project_id']}/{platform['name']}/app"
         )
     else:
-        terraform(BOOTSTRAP, "init", "-input=false")
-        if not dry_run:
-            print("Updating bootstrap infrastructure...", flush=True)
-            terraform(BOOTSTRAP, "apply", "-input=false", "-auto-approve")
+        inputs = bootstrap_inputs()
+        run_bootstrap(
+            platform_for_project(
+                inputs["project_id"],
+                region=inputs["region"],
+                name=inputs["name"],
+                site_id=inputs["site_id"],
+                state_bucket=state_bucket or inputs["state_bucket"],
+            ),
+            dry_run=dry_run,
+        )
         if bootstrap_only:
             return
         platform = output(BOOTSTRAP, "platform")
@@ -998,15 +1021,24 @@ def deploy(
             and "agent" in platform.get("identities", {})
             and "AGENT_SERVICE_TOKEN" in versions
         ):
-            resource = deploy_agent_runtime(
-                platform,
-                origin,
-                provider=resolved_agent_provider,
-                model=variables.get("agent_model", ""),
-                existing=variables.get("agent_runtime_resource", ""),
-            )
-            variables["agent_runtime_resource"] = resource
-            variables["agent_provider"] = resolved_agent_provider
+            # The planner is optional; its failure must not keep device polling paused.
+            try:
+                resource = deploy_agent_runtime(
+                    platform,
+                    origin,
+                    provider=resolved_agent_provider,
+                    model=variables.get("agent_model", ""),
+                    existing=variables.get("agent_runtime_resource", ""),
+                )
+            except (DeploymentError, subprocess.CalledProcessError) as exc:
+                print(
+                    f"WARNING: Agent Runtime deploy failed; keeping the previous planner: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                variables["agent_runtime_resource"] = resource
+                variables["agent_provider"] = resolved_agent_provider
         print("Enabling minute schedule...", flush=True)
         variables["scheduler_paused"] = False
         apply(variables)
