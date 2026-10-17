@@ -1,0 +1,123 @@
+steps:
+  - id: build-ui
+    name: node:24-bookworm-slim
+    waitFor: ['-']
+    volumes:
+      - name: tools
+        path: /tools
+    entrypoint: sh
+    args:
+      - -ceu
+      - |
+        npm --prefix frontend ci
+        npm --prefix frontend run build
+        mkdir -p /tools/bin /tools/firebase-cli
+        cp /usr/local/bin/node /tools/bin/node
+        npm install --prefix /tools/firebase-cli --no-save firebase-tools
+        ln -sf /tools/firebase-cli/node_modules/.bin/firebase /tools/bin/firebase
+
+  - id: stage-terraform
+    name: hashicorp/terraform:1.9
+    waitFor: ['-']
+    volumes:
+      - name: tools
+        path: /tools
+    entrypoint: sh
+    args:
+      - -ceu
+      - |
+        mkdir -p /tools/bin
+        cp /bin/terraform /tools/bin/terraform
+
+  - id: bootstrap
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    waitFor: [stage-terraform]
+    volumes:
+      - name: tools
+        path: /tools
+    env:
+      - PATH=/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    args:
+      - python3
+      - -m
+      - scripts.deploy_gcp
+      - --bootstrap-only
+      - --project-id=${PROJECT_ID}
+      - --region=${_REGION}
+      - --name=${_NAME}
+      - --site-id=${_SITE_ID}
+      - --state-bucket=${_STATE_BUCKET}
+
+  - id: build-backend
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    volumes:
+      - name: tools
+        path: /tools
+    entrypoint: sh
+    args:
+      - -ceu
+      - |
+        image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_NAME}/app:${BUILD_ID}"
+        docker build --platform linux/amd64 --target backend --tag "$image" .
+        cid=$(docker create "$image")
+        mkdir -p /tools/bin /tools/usr-local
+        docker cp "$cid:/usr/local/." /tools/usr-local/
+        docker cp "$cid:/app/.venv" /tools/venv
+        docker rm "$cid"
+        cat <<'EOF' > /tools/bin/adk
+        #!/bin/sh
+        set -eu
+        if [ ! -e /app/.venv ]; then
+          mkdir -p /app
+          ln -s /tools/venv /app/.venv
+          cp -a /tools/usr-local/. /usr/local/
+          ldconfig
+        fi
+        exec /app/.venv/bin/adk "$@"
+        EOF
+        chmod +x /tools/bin/adk
+
+  - id: push-backend
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-backend, bootstrap]
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_NAME}/app:${BUILD_ID}
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    waitFor: [build-ui, push-backend]
+    volumes:
+      - name: tools
+        path: /tools
+    env:
+      - PATH=/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    args:
+      - python3
+      - -m
+      - scripts.deploy_gcp
+      - --skip-build
+      - --project-id=${PROJECT_ID}
+      - --region=${_REGION}
+      - --name=${_NAME}
+      - --site-id=${_SITE_ID}
+      - --state-bucket=${_STATE_BUCKET}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_NAME}/app:${BUILD_ID}
+      - --app-url=${_APP_URL}
+      - --agent-provider=${_AGENT_PROVIDER}
+      - --agent-model=${_AGENT_MODEL}
+      - --agent-runtime-resource=${_AGENT_RUNTIME_RESOURCE}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _REGION: asia-southeast1
+  _NAME: climate-control
+  _SITE_ID: ''
+  _STATE_BUCKET: ''
+  _APP_URL: ''
+  _AGENT_PROVIDER: ''
+  _AGENT_MODEL: ''
+  _AGENT_RUNTIME_RESOURCE: ''

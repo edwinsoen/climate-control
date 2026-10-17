@@ -52,6 +52,7 @@ dist/
 *.tfvars.json
 !*.example.tfvars
 !*.example.tfvars.json
+backend.tf.json
 .firebase/
 firebase-debug.log
 .deploy.lock

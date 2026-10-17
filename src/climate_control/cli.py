@@ -20,6 +20,7 @@ def main():
         "command",
         choices=["key", "hash-password", "migrate", "serve", "serve-api", "tick", "plan"],
     )
+    parser.add_argument("--agent-token-hash", default="")
     args = parser.parse_args()
     if args.command == "key":
         print(Fernet.generate_key().decode())
@@ -31,6 +32,17 @@ def main():
         print(password_hasher.hash(password))
     elif args.command == "migrate":
         command.upgrade(Config("alembic.ini"), "head")
+        if args.agent_token_hash:
+            from climate_control.agent.access import ensure_service_token_hash
+            from climate_control.config import DatabaseSettings
+            from climate_control.db import database
+
+            engine, sessions = database(DatabaseSettings().database_url)
+            try:
+                with sessions() as db:
+                    ensure_service_token_hash(db, args.agent_token_hash)
+            finally:
+                engine.dispose()
     elif args.command in {"tick", "plan"}:
         from climate_control.agent.worker import run_plan
 

@@ -21,8 +21,12 @@ variables {
       AGENT_SERVICE_TOKEN = "test-agent-token"
     }
   }
-  image           = "asia-southeast1-docker.pkg.dev/climate-test/app/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  secret_versions = { DATABASE_URL = "1", ENCRYPTION_KEY = "1", ADMIN_PASSWORD_HASH = "1" }
+  image               = "asia-southeast1-docker.pkg.dev/climate-test/app/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  secret_versions     = { DATABASE_URL = "1", ENCRYPTION_KEY = "1", ADMIN_PASSWORD_HASH = "1" }
+  api_enabled         = false
+  api_image           = null
+  api_secret_versions = null
+  scheduler_paused    = true
 }
 run "migration_stage" {
   command = plan
@@ -122,7 +126,10 @@ run "planner_least_privilege" {
 
 run "planner_disabled" {
   command = plan
-  variables { agent_provider = "disabled" }
+  variables {
+    agent_provider         = "disabled"
+    agent_runtime_resource = "projects/climate-test/locations/asia-southeast1/reasoningEngines/1"
+  }
   assert {
     condition     = !contains(keys(google_cloud_run_v2_job.job), "planner") && length(google_cloud_scheduler_job.plan) == 0
     error_message = "A disabled planner creates no job or schedule."

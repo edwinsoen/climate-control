@@ -128,7 +128,11 @@ class Settings(WorkerSettings):
     planner_job: str = ""
 
     @field_validator(
-        "admin_password_hash", "google_client_id", "google_client_secret", mode="before"
+        "admin_password_hash",
+        "google_client_id",
+        "google_client_secret",
+        "google_allowed_emails",
+        mode="before",
     )
     @classmethod
     def trim_web_secrets(cls, value):

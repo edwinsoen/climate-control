@@ -38,13 +38,9 @@ variable "secret_versions" {
     error_message = "Use numeric secret versions and include DATABASE_URL and ENCRYPTION_KEY."
   }
   validation {
-    condition     = contains(keys(var.secret_versions), "ADMIN_PASSWORD_HASH") || (contains(keys(var.secret_versions), "GOOGLE_CLIENT_ID") && contains(keys(var.secret_versions), "GOOGLE_CLIENT_SECRET"))
-    error_message = "Configure administrator password authentication or both Google secrets."
+    condition     = contains(keys(var.secret_versions), "ADMIN_PASSWORD_HASH") || (contains(keys(var.secret_versions), "GOOGLE_CLIENT_ID") && contains(keys(var.secret_versions), "GOOGLE_CLIENT_SECRET") && contains(keys(var.secret_versions), "GOOGLE_ALLOWED_EMAILS"))
+    error_message = "Configure administrator password authentication or all three Google secrets."
   }
-}
-variable "google_allowed_emails" {
-  type    = string
-  default = ""
 }
 variable "app_url" {
   description = "Canonical HTTPS UI origin; defaults to the Firebase web.app origin."
@@ -96,14 +92,16 @@ locals {
   worker_secrets     = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "ENCRYPTION_KEY", "AQICN_API_TOKEN"], key) }
   migrate_secrets    = { DATABASE_URL = var.secret_versions["DATABASE_URL"] }
   planner_secrets    = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "OPENROUTER_API_KEY"], key) }
-  planner_enabled = var.agent_runtime_resource != "" || var.agent_provider == "gemini" || (
-    var.agent_provider == "openrouter" && contains(keys(var.secret_versions), "OPENROUTER_API_KEY")
+  planner_enabled = var.agent_provider != "disabled" && (
+    var.agent_runtime_resource != "" || var.agent_provider == "gemini" || (
+      var.agent_provider == "openrouter" && contains(keys(var.secret_versions), "OPENROUTER_API_KEY")
+    )
   )
   agent_env = {
     AGENT_PROVIDER         = local.planner_enabled ? var.agent_provider : "disabled"
     AGENT_MODEL            = var.agent_model
-    AGENT_RUNTIME          = var.agent_runtime_resource != "" ? "remote" : "embedded"
-    AGENT_RUNTIME_RESOURCE = var.agent_runtime_resource
+    AGENT_RUNTIME          = local.planner_enabled && var.agent_runtime_resource != "" ? "remote" : "embedded"
+    AGENT_RUNTIME_RESOURCE = local.planner_enabled ? var.agent_runtime_resource : ""
     GOOGLE_CLOUD_PROJECT   = var.platform.project_id
   }
   jobs = merge(
@@ -209,7 +207,6 @@ resource "google_cloud_run_v2_service" "api" {
           PLANNER_JOB = "projects/${var.platform.project_id}/locations/${var.platform.region}/jobs/${var.platform.name}-planner"
           } : {}, {
           APP_URL                       = local.app_url
-          GOOGLE_ALLOWED_EMAILS         = var.google_allowed_emails
           SCHEDULER_ENABLED             = "false"
           AUTO_MIGRATE                  = "false"
           API_OPERATION_TIMEOUT_SECONDS = "50"
@@ -235,7 +232,7 @@ resource "google_cloud_run_v2_service" "api" {
   }
   lifecycle {
     precondition {
-      condition     = !contains(keys(local.api_secrets), "GOOGLE_CLIENT_ID") || trimspace(var.google_allowed_emails) != ""
+      condition     = !contains(keys(local.api_secrets), "GOOGLE_CLIENT_ID") || contains(keys(local.api_secrets), "GOOGLE_ALLOWED_EMAILS")
       error_message = "Google authentication requires an allowed email list."
     }
   }
@@ -315,8 +312,8 @@ resource "google_cloud_scheduler_job" "plan" {
 output "project_id" { value = var.platform.project_id }
 output "app_url" { value = local.app_url }
 output "api_url" { value = try(google_cloud_run_v2_service.api[0].uri, null) }
-output "migration_job" { value = google_cloud_run_v2_job.job["migrate"].name }
-output "worker_job" { value = google_cloud_run_v2_job.job["worker"].name }
+output "migration_job" { value = try(google_cloud_run_v2_job.job["migrate"].name, null) }
+output "worker_job" { value = try(google_cloud_run_v2_job.job["worker"].name, null) }
 output "planner_job" { value = try(google_cloud_run_v2_job.job["planner"].name, null) }
 output "firebase_config" {
   value = {
