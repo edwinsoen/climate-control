@@ -32,7 +32,6 @@ provider "google-beta" {
   region                = var.region
   user_project_override = true
 }
-data "google_project" "project" {}
 locals {
   site_id            = coalesce(var.site_id, var.project_id)
   state_bucket       = coalesce(var.state_bucket, "${var.project_id}-${var.name}-tfstate")
@@ -40,8 +39,7 @@ locals {
   runtime_identities = toset(["api", "worker", "migrate", "scheduler", "planner", "agent"])
   # planner runs the scheduled planning job; agent is the Agent Runtime identity;
   # cloudbuild runs automated deployments from Cloud Build triggers.
-  telemetry_roles       = ["roles/telemetry.tracesWriter", "roles/telemetry.metricsWriter"]
-  cloudbuild_principals = toset(["cloudbuild", "default"])
+  telemetry_roles = ["roles/telemetry.tracesWriter", "roles/telemetry.metricsWriter"]
   cloudbuild_roles = [
     "roles/run.admin",
     "roles/cloudscheduler.admin",
@@ -57,7 +55,7 @@ locals {
   ]
   project_roles = merge(
     { for pair in setproduct(["api", "worker", "planner", "agent"], local.telemetry_roles) : "${pair[0]}-${pair[1]}" => { identity = pair[0], role = pair[1] } },
-    { for pair in setproduct(local.cloudbuild_principals, local.cloudbuild_roles) : "${pair[0]}-${pair[1]}" => { identity = pair[0], role = pair[1] } },
+    { for role in local.cloudbuild_roles : "cloudbuild-${role}" => { identity = "cloudbuild", role = role } },
     {
       planner-aiplatform = { identity = "planner", role = "roles/aiplatform.user" }
       agent-aiplatform   = { identity = "agent", role = "roles/aiplatform.user" }
@@ -106,26 +104,24 @@ resource "google_project_iam_member" "runtime" {
   for_each = local.project_roles
   project  = var.project_id
   role     = each.value.role
-  member   = each.value.identity == "default" ? "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com" : "serviceAccount:${google_service_account.runtime[each.value.identity].email}"
+  member   = "serviceAccount:${google_service_account.runtime[each.value.identity].email}"
 }
 resource "google_storage_bucket_iam_member" "cloudbuild_state" {
-  for_each = local.cloudbuild_principals
-  bucket   = google_storage_bucket.state.name
-  role     = "roles/storage.objectAdmin"
-  member   = each.key == "default" ? "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com" : "serviceAccount:${google_service_account.runtime["cloudbuild"].email}"
+  bucket = google_storage_bucket.state.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.runtime["cloudbuild"].email}"
 }
 resource "google_artifact_registry_repository_iam_member" "cloudbuild_images" {
-  for_each   = local.cloudbuild_principals
   location   = google_artifact_registry_repository.images.location
   repository = google_artifact_registry_repository.images.name
   role       = "roles/artifactregistry.writer"
-  member     = each.key == "default" ? "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com" : "serviceAccount:${google_service_account.runtime["cloudbuild"].email}"
+  member     = "serviceAccount:${google_service_account.runtime["cloudbuild"].email}"
 }
 resource "google_service_account_iam_member" "cloudbuild_runtime" {
-  for_each           = { for pair in setproduct(local.cloudbuild_principals, local.runtime_identities) : "${pair[0]}-${pair[1]}" => { principal = pair[0], identity = pair[1] } }
-  service_account_id = google_service_account.runtime[each.value.identity].name
+  for_each           = local.runtime_identities
+  service_account_id = google_service_account.runtime[each.key].name
   role               = "roles/iam.serviceAccountUser"
-  member             = each.value.principal == "default" ? "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com" : "serviceAccount:${google_service_account.runtime["cloudbuild"].email}"
+  member             = "serviceAccount:${google_service_account.runtime["cloudbuild"].email}"
 }
 resource "google_secret_manager_secret_iam_member" "agent" {
   # Agent Runtime reads its MCP token and model key from Secret Manager at runtime.

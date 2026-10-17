@@ -109,6 +109,8 @@ steps:
       - --agent-model=${_AGENT_MODEL}
       - --agent-runtime-resource=${_AGENT_RUNTIME_RESOURCE}
 
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/${_NAME}-cloudbuild@$PROJECT_ID.iam.gserviceaccount.com
+
 options:
   logging: CLOUD_LOGGING_ONLY
 
