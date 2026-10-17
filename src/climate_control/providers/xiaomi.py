@@ -435,7 +435,7 @@ MODEL_SPECS: dict[str, XiaomiModelSpec] = {
     "zhimi.airp.mc2": _SPEC_PURIFIER_2H,
 }
 
-MODE_FROM_MIOT = {0: "auto", 1: "sleep", 2: "manual", 3: "manual", 4: "manual", 5: "manual"}
+MODE_FROM_MIOT = {0: "auto", 1: "sleep", 2: "manual", 3: "preset", 4: "preset", 5: "preset"}
 MODE_TO_MIOT = {"auto": 0, "sleep": 1}
 QUALITY_FROM_MIOT = {
     0: "excellent",
@@ -489,7 +489,7 @@ def spec_controls(spec: XiaomiModelSpec, supported: list[str] | None = None) -> 
 def level_to_rpm(level: int, rpm_range: tuple[int, int]) -> int:
     low, high = rpm_range
     clamped = max(1, min(10, level))
-    return round(low + (clamped - 1) * (high - low) / 9)
+    return round((low + (clamped - 1) * (high - low) / 9) / 10) * 10
 
 
 def rpm_to_level(rpm: int | float, rpm_range: tuple[int, int]) -> int:
