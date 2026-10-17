@@ -15,7 +15,7 @@ from climate_control import __version__
 from climate_control.agent.access import router as access_router
 from climate_control.agent.mcp_server import create_mcp_server, mcp_app
 from climate_control.agent.worker import PlannerJobTrigger, PlannerWorker, create_planner
-from climate_control.api import legacy_scheduler_router, router
+from climate_control.api import router, scheduler_router
 from climate_control.automation_api import router as automation_router
 from climate_control.config import Settings
 from climate_control.runtime import create_runtime
@@ -31,7 +31,7 @@ def create_app(
     settings: Settings | None = None, provider=None, outdoor_provider=None, *, api_only=False
 ) -> FastAPI:
     settings = settings or Settings()
-    runtime = create_runtime(settings, provider, outdoor_provider, worker=not api_only)
+    runtime = create_runtime(settings, provider, outdoor_provider)
     engine, sessions = runtime.engine, runtime.sessions
     vault, outdoor, poller = runtime.vault, runtime.outdoor, runtime.poller
     schema_revision = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
@@ -49,6 +49,8 @@ def create_app(
                 tasks.append(asyncio.create_task(worker.run()))
         elif settings.planner_job:
             app.state.planning_trigger = PlannerJobTrigger(settings.planner_job)
+        # Scheduled ticks start planning when rule evaluation leaves claimable requests.
+        poller.planning_trigger = app.state.planning_trigger
         try:
             async with mcp.session_manager.run():
                 yield
@@ -76,8 +78,7 @@ def create_app(
     app.state.outdoor = outdoor
     app.state.planning_trigger = None
     app.include_router(router)
-    if not api_only:
-        app.include_router(legacy_scheduler_router)
+    app.include_router(scheduler_router)
     app.include_router(automation_router)
     app.include_router(access_router)
     mcp = create_mcp_server(app.state)

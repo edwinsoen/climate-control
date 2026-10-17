@@ -1,6 +1,6 @@
 # Device automation
 
-The deterministic engine runs after collection in each local scheduler cycle or GCP minute `tick`. It evaluates cached observations and uses the poller's account leases, pacing, backoff, and immediate readback. It does not invoke a model. The [in-app planner](AGENT.md) or an external planner proposes rules through the planning protocol below. Migration `0009` creates disabled automation for existing devices, versioned rules, events, and durable planning jobs. New devices also start disabled.
+The deterministic engine runs after collection in each local scheduler cycle or GCP minute tick (`POST /internal/poll`). It evaluates cached observations and uses the poller's account leases, pacing, backoff, and immediate readback. It does not invoke a model. The [in-app planner](AGENT.md) or an external planner proposes rules through the planning protocol below. Migration `0009` creates disabled automation for existing devices, versioned rules, events, and durable planning jobs. New devices also start disabled.
 
 ## User controls and ownership
 

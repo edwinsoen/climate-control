@@ -86,10 +86,11 @@ provider "google" {
 }
 locals {
   app_url = coalesce(var.app_url, "https://${var.platform.site_id}.web.app")
-  # Model and agent credentials never reach the API or the device worker.
+  # A fixed OIDC audience; the API cannot reference its own generated URI.
+  scheduler_audience = "${local.app_url}/internal/poll"
+  # Model and agent credentials never reach the API, which also runs the minute tick.
   agent_secret_names = ["OPENROUTER_API_KEY", "AGENT_SERVICE_TOKEN"]
   api_secrets        = { for key, version in(var.api_secret_versions != null ? var.api_secret_versions : var.secret_versions) : key => version if !contains(local.agent_secret_names, key) }
-  worker_secrets     = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "ENCRYPTION_KEY", "AQICN_API_TOKEN"], key) }
   migrate_secrets    = { DATABASE_URL = var.secret_versions["DATABASE_URL"] }
   planner_secrets    = { for key, version in var.secret_versions : key => version if contains(["DATABASE_URL", "OPENROUTER_API_KEY"], key) }
   planner_enabled = var.agent_provider != "disabled" && (
@@ -105,18 +106,16 @@ locals {
     GOOGLE_CLOUD_PROJECT   = var.platform.project_id
   }
   jobs = merge(
-    { worker = "tick", migrate = "migrate" },
+    { migrate = "migrate" },
     local.planner_enabled ? { planner = "plan" } : {}
   )
-  job_secrets = { worker = local.worker_secrets, migrate = local.migrate_secrets, planner = local.planner_secrets }
+  job_secrets = { migrate = local.migrate_secrets, planner = local.planner_secrets }
   job_env = {
-    worker  = { AUTO_MIGRATE = "false", GOOGLE_CLOUD_PROJECT = var.platform.project_id }
     migrate = { AUTO_MIGRATE = "false" }
     planner = merge({ AUTO_MIGRATE = "false" }, local.agent_env)
   }
   grants = merge(
     { for key, version in local.api_secrets : "api-${key}" => { role = "api", secret = key } },
-    { for key, version in local.worker_secrets : "worker-${key}" => { role = "worker", secret = key } },
     { "migrate-DATABASE_URL" = { role = "migrate", secret = "DATABASE_URL" } },
     local.planner_enabled ? { for key, version in local.planner_secrets : "planner-${key}" => { role = "planner", secret = key } } : {}
   )
@@ -179,7 +178,8 @@ resource "google_cloud_run_v2_service" "api" {
   template {
     service_account                  = var.platform.identities["api"]
     max_instance_request_concurrency = 20
-    timeout                          = "60s"
+    # Scheduled ticks may wait on slow providers; Firebase still limits UI requests to 60s.
+    timeout = "300s"
     scaling {
       min_instance_count = 0
       max_instance_count = 2
@@ -208,6 +208,8 @@ resource "google_cloud_run_v2_service" "api" {
           } : {}, {
           APP_URL                       = local.app_url
           SCHEDULER_ENABLED             = "false"
+          SCHEDULER_SERVICE_ACCOUNT     = var.platform.identities["scheduler"]
+          SCHEDULER_AUDIENCE            = local.scheduler_audience
           AUTO_MIGRATE                  = "false"
           API_OPERATION_TIMEOUT_SECONDS = "50"
         })
@@ -238,14 +240,6 @@ resource "google_cloud_run_v2_service" "api" {
   }
   depends_on = [google_secret_manager_secret_iam_member.runtime]
 }
-resource "google_cloud_run_v2_job_iam_member" "scheduler" {
-  for_each = toset([for key in ["worker", "planner"] : key if contains(keys(local.jobs), key)])
-  project  = var.platform.project_id
-  location = var.platform.region
-  name     = google_cloud_run_v2_job.job[each.key].name
-  role     = "roles/run.invoker"
-  member   = "serviceAccount:${var.platform.identities["scheduler"]}"
-}
 resource "google_cloud_run_v2_job_iam_member" "api_planner" {
   count    = local.planner_enabled ? 1 : 0
   project  = var.platform.project_id
@@ -260,16 +254,18 @@ resource "google_cloud_scheduler_job" "tick" {
   schedule         = "* * * * *"
   time_zone        = "Etc/UTC"
   paused           = var.scheduler_paused
-  attempt_deadline = "60s"
+  attempt_deadline = "300s"
   retry_config { retry_count = 0 }
   http_target {
     http_method = "POST"
-    uri         = "https://run.googleapis.com/v2/projects/${var.platform.project_id}/locations/${var.platform.region}/jobs/${google_cloud_run_v2_job.job["worker"].name}:run"
-    body        = base64encode("{}")
-    headers     = { "Content-Type" = "application/json" }
-    oauth_token {
+    # Calls the API directly, bypassing Firebase's 60-second proxy limit. The URI is a
+    # placeholder only while the API is disabled, when the schedule must stay paused.
+    uri     = var.api_enabled ? "${google_cloud_run_v2_service.api[0].uri}/internal/poll" : local.scheduler_audience
+    body    = base64encode("{}")
+    headers = { "Content-Type" = "application/json" }
+    oidc_token {
       service_account_email = var.platform.identities["scheduler"]
-      scope                 = "https://www.googleapis.com/auth/cloud-platform"
+      audience              = local.scheduler_audience
     }
   }
   lifecycle {
@@ -278,42 +274,11 @@ resource "google_cloud_scheduler_job" "tick" {
       error_message = "Enable the migrated API before unpausing the scheduler."
     }
   }
-  depends_on = [google_cloud_run_v2_job_iam_member.scheduler]
-}
-resource "google_cloud_scheduler_job" "plan" {
-  # Planning requests are rare and tolerate minutes of latency; a five-minute cadence
-  # keeps idle job executions cheap.
-  count            = local.planner_enabled ? 1 : 0
-  name             = "${var.platform.name}-plan"
-  region           = var.platform.region
-  schedule         = "*/5 * * * *"
-  time_zone        = "Etc/UTC"
-  paused           = var.scheduler_paused
-  attempt_deadline = "60s"
-  retry_config { retry_count = 0 }
-  http_target {
-    http_method = "POST"
-    uri         = "https://run.googleapis.com/v2/projects/${var.platform.project_id}/locations/${var.platform.region}/jobs/${google_cloud_run_v2_job.job["planner"].name}:run"
-    body        = base64encode("{}")
-    headers     = { "Content-Type" = "application/json" }
-    oauth_token {
-      service_account_email = var.platform.identities["scheduler"]
-      scope                 = "https://www.googleapis.com/auth/cloud-platform"
-    }
-  }
-  lifecycle {
-    precondition {
-      condition     = var.scheduler_paused || var.api_enabled
-      error_message = "Enable the migrated API before unpausing the scheduler."
-    }
-  }
-  depends_on = [google_cloud_run_v2_job_iam_member.scheduler]
 }
 output "project_id" { value = var.platform.project_id }
 output "app_url" { value = local.app_url }
 output "api_url" { value = try(google_cloud_run_v2_service.api[0].uri, null) }
 output "migration_job" { value = try(google_cloud_run_v2_job.job["migrate"].name, null) }
-output "worker_job" { value = try(google_cloud_run_v2_job.job["worker"].name, null) }
 output "planner_job" { value = try(google_cloud_run_v2_job.job["planner"].name, null) }
 output "firebase_config" {
   value = {

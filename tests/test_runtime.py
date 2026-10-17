@@ -35,7 +35,7 @@ class FirebaseTransport(httpx.ASGITransport):
         return await super().handle_async_request(request)
 
 
-async def test_api_mode_does_not_collect_or_serve_ui(app):
+async def test_api_mode_does_not_collect_in_background_or_serve_ui(app):
     app.state.settings.aqicn_api_token = SecretStr("fake-token")
     api = create_api_app(app.state.settings, app.state.poller.provider, FakeOutdoor())
     async with api.router.lifespan_context(api):
@@ -43,7 +43,7 @@ async def test_api_mode_does_not_collect_or_serve_ui(app):
             transport=FirebaseTransport(app=api), base_url="http://localhost:8080"
         ) as client:
             assert (await client.get("/")).status_code == 404
-            assert (await client.post("/internal/poll")).status_code == 404
+            assert (await client.post("/internal/poll")).status_code == 401
             login = await client.post(
                 "/api/login", json={"username": "admin", "password": TEST_PASSWORD}
             )
@@ -57,9 +57,49 @@ async def test_api_mode_does_not_collect_or_serve_ui(app):
             ).status_code == 200
             assert api.state.outdoor.provider.calls == [("search", "test")]
             assert not api.state.poller.provider.calls
-            assert not hasattr(api.state.poller, "automation")
             assert (await client.post("/api/logout")).status_code == 200
             assert (await client.get("/api/accounts")).status_code == 401
+
+
+async def test_api_scheduler_tick_runs_rules_and_requires_configuration(
+    app, signed_client, controlled_device, monkeypatch
+):
+    from climate_control import api as api_routes
+
+    await setup_rules(signed_client, controlled_device)
+    with app.state.sessions() as db:
+        account = db.get(Account, controlled_device["account_id"])
+        account.next_poll_at = account.next_control_at = 0
+        db.commit()
+    monkeypatch.setattr(
+        api_routes.id_token,
+        "verify_oauth2_token",
+        lambda token, request, audience: {
+            "email": app.state.settings.scheduler_service_account,
+            "email_verified": True,
+        },
+    )
+    headers = {"Authorization": "Bearer valid-test-token"}
+    api = create_api_app(app.state.settings, app.state.poller.provider, FakeOutdoor())
+    async with api.router.lifespan_context(api):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api), base_url="http://localhost:8080"
+        ) as client:
+            response = await client.post("/internal/poll", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["refreshed"] == 1
+    assert response.json()["automation_checked"] == 1
+    with app.state.sessions() as db:
+        assert db.get(Device, controlled_device["id"]).state["fan_level"] == 3
+
+    unconfigured = app.state.settings.model_copy(
+        update={"scheduler_service_account": "", "scheduler_audience": ""}
+    )
+    api = create_api_app(unconfigured, app.state.poller.provider, FakeOutdoor())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api), base_url="http://localhost:8080"
+    ) as client:
+        assert (await client.post("/internal/poll", headers=headers)).status_code == 404
 
 
 async def test_tick_collects_applies_rules_and_cleans_expired_records(

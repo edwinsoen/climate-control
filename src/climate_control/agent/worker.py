@@ -8,6 +8,7 @@ and submits it through the same path as external planners.
 import asyncio
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 
@@ -441,7 +442,7 @@ class PlannerWorker:
 
 
 async def run_plan(settings=None, planner=None) -> dict:
-    """One scheduled planning pass, for the GCP `plan` job."""
+    """One planning pass, for the on-demand GCP `planner` job."""
     from climate_control.config import AgentSettings
     from climate_control.db import database
 
@@ -457,10 +458,11 @@ async def run_plan(settings=None, planner=None) -> dict:
 
 
 class PlannerJobTrigger:
-    """Starts the scheduled planner Cloud Run Job on demand, from the API process."""
+    """Starts the planner Cloud Run Job on demand, from the API process."""
 
     def __init__(self, job: str):
         self.job = job
+        self.started_at = -math.inf
 
     def __call__(self):
         import google.auth
@@ -474,6 +476,7 @@ class PlannerJobTrigger:
                 f"https://run.googleapis.com/v2/{self.job}:run", json={}, timeout=5
             )
             response.raise_for_status()
+            self.started_at = time.monotonic()
         except Exception:
-            # The five-minute schedule still picks the request up.
+            # The next scheduled tick retries while planning work remains claimable.
             logger.warning("planner_trigger_failed")

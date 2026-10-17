@@ -113,8 +113,7 @@ async def test_retention_and_account_deletion_clean_up_history(app, connected, s
             )
         )
         db.commit()
-    due(app, connected["id"])
-    await app.state.poller.refresh(connected["id"])
+    await app.state.poller.tick()
     with app.state.sessions() as db:
         assert all(
             reading.recorded_at > time.time() - RETENTION_SECONDS

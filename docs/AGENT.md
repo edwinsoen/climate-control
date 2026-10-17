@@ -50,14 +50,14 @@ The defaults are moving aliases. Set `AGENT_MODEL` to pin a specific model.
 
 ### Where it runs
 
-Switching a device to agent ownership, or clicking **Request review**, starts planning immediately: locally it wakes the loop, and on GCP the API starts the `plan` job. The rule page checks every 3 seconds while a review is pending and shows the agent's rules as soon as they are saved. Other reviews wait for the next scheduled check.
+Switching a device to agent ownership, or clicking **Request review**, starts planning immediately: locally it wakes the loop, and on GCP the API starts the `planner` Job. The rule page checks every 3 seconds while a review is pending and shows the agent's rules as soon as they are saved. Other reviews start the `planner` Job from the next minute tick that finds claimable work.
 
 
 | Mode | Planner process |
 | --- | --- |
 | Local `serve` | An in-process loop beside the poller, checking every 30 seconds. It never delays rule execution. |
-| GCP (`AGENT_RUNTIME=remote`, default) | The `plan` Cloud Run Job, run every five minutes, queries the planner deployed on Agent Runtime (`AGENT_RUNTIME_RESOURCE`). That agent reaches the app's tools through `/mcp` with a read-scoped token (`AGENT_SERVICE_TOKEN`). |
-| Embedded (`AGENT_RUNTIME=embedded`) | When no `AGENT_RUNTIME_RESOURCE` is configured, the `plan` Job runs the planner in-process with `DATABASE_URL` and model access, never the encryption key or provider credentials. |
+| GCP (`AGENT_RUNTIME=remote`, default) | The `planner` Cloud Run Job, started on demand by the API, queries the planner deployed on Agent Runtime (`AGENT_RUNTIME_RESOURCE`). That agent reaches the app's tools through `/mcp` with a read-scoped token (`AGENT_SERVICE_TOKEN`). |
+| Embedded (`AGENT_RUNTIME=embedded`) | When no `AGENT_RUNTIME_RESOURCE` is configured, the `planner` Job runs the planner in-process with `DATABASE_URL` and model access, never the encryption key or provider credentials. |
 
 ## MCP
 
@@ -97,7 +97,7 @@ GCP releases ([`cloudbuild.yaml`](../cloudbuild.yaml) and `invoke deploy`) deplo
 
 1. On the first release, if `AGENT_SERVICE_TOKEN` has no enabled Secret Manager version, the release generates a `cc_…` token, registers its SHA-256 digest in `access_tokens` with the `read` scope during `migrate`, and stores the token in Secret Manager.
 2. For OpenRouter (`_AGENT_PROVIDER=openrouter` or `--provider openrouter`), populate `OPENROUTER_API_KEY` in Secret Manager before deploying.
-3. After the API and Firebase Hosting are ready, the release stages `deploy/agent_runtime/climate_planner` with this package and pinned requirements, deploys or updates the Reasoning Engine with `adk deploy agent_engine --otel_to_cloud` as the `agent` service account, records the resource name in `infra/gcp/runtime/agent.auto.tfvars.json`, and wires `agent_runtime_resource` into the `plan` Job and `api` service.
+3. After the API and Firebase Hosting are ready, the release stages `deploy/agent_runtime/climate_planner` with this package and pinned requirements, deploys or updates the Reasoning Engine with `adk deploy agent_engine --otel_to_cloud` as the `agent` service account, records the resource name in `infra/gcp/runtime/agent.auto.tfvars.json`, and wires `agent_runtime_resource` into the `planner` Job and `api` service.
 
 You can also update the Agent Runtime deployment standalone after an initial release with `invoke deploy-agent` (adding `--provider openrouter` and/or `--model ID` if needed).
 
@@ -105,7 +105,7 @@ The deployed agent reads its token and model key from Secret Manager at runtime.
 
 ## Telemetry
 
-On GCP (`TELEMETRY=auto` detects Cloud Run), the API, worker, and planner export data as follows:
+On GCP (`TELEMETRY=auto` detects Cloud Run), the API and planner export data as follows:
 - **Traces:** OpenTelemetry traces go to Cloud Trace through the Telemetry API. They include ADK agent, model, and tool spans plus MCP tool-call spans with tool name, scope, and outcome.
 - **Metrics:** ADK metrics go to Cloud Monitoring.
 - **Logs:** written as JSON with trace correlation, which Cloud Run forwards to Cloud Logging.

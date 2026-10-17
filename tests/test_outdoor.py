@@ -138,6 +138,13 @@ async def test_poll_interval_and_missing_token_do_not_contact_provider(app, outd
     assert data["metrics"]["aqi"]["value"] == 42
 
 
+async def test_scheduled_tick_collects_station_due_within_jitter(app, outdoor):
+    await outdoor.tick()
+    due(app, next_poll_at=time.time() + 3)
+    assert (await outdoor.tick())["checked"] == 1
+    assert outdoor.provider.calls == [("feed", 1), ("feed", 1)]
+
+
 async def test_duplicate_corrections_and_older_or_invalid_samples_preserve_current(app, outdoor):
     await outdoor.tick()
     recorded = outdoor.provider.readings[0].recorded_at

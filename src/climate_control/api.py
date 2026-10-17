@@ -49,7 +49,7 @@ from climate_control.providers.base import DeviceCommand, ProviderError
 from climate_control.security import create_session, digest, verify_password
 
 router = APIRouter()
-legacy_scheduler_router = APIRouter()
+scheduler_router = APIRouter()
 SESSION_COOKIE = "__session"
 FLOW_COOKIE = SESSION_COOKIE
 
@@ -932,7 +932,7 @@ def scheduler_identity(claims: dict, expected_email: str):
         raise ValueError("Invalid scheduler identity")
 
 
-@legacy_scheduler_router.post("/internal/poll")
+@scheduler_router.post("/internal/poll")
 async def scheduler_poll(request: Request):
     settings = request.app.state.settings
     if not settings.scheduler_service_account or not settings.scheduler_audience:

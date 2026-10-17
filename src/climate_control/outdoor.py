@@ -26,6 +26,8 @@ LEASE_SECONDS = 120
 TICK_TIMEOUT_SECONDS = 90
 REQUEST_SPACING_SECONDS = 2
 SEARCH_QUEUE_SECONDS = 30
+# Scheduled ticks collect a station due within this window so scheduler jitter skips no cycle.
+POLL_GRACE_SECONDS = 5
 
 
 def timestamp(value):
@@ -68,6 +70,20 @@ class OutdoorCollector:
             configuration = db.get(OutdoorConfiguration, 1)
             location_id = configuration.location_id
             if location_id is None or not self.settings.aqicn_api_token.get_secret_value():
+                db.commit()
+                return None
+            station = db.get(OutdoorStation, location_id)
+            if (
+                station is not None
+                and station.credential_version == self.credential_version
+                and (
+                    station.auth_error
+                    or station.lease_until > current
+                    or station.retry_at > current
+                    or station.next_poll_at > current + POLL_GRACE_SECONDS
+                )
+            ):
+                # Not due: skip the configuration lease and station writes.
                 db.commit()
                 return None
             token = str(uuid4())
@@ -125,7 +141,7 @@ class OutdoorCollector:
                     OutdoorStation.auth_error.is_(False),
                     OutdoorStation.lease_until <= current,
                     OutdoorStation.retry_at <= current,
-                    OutdoorStation.next_poll_at <= current,
+                    OutdoorStation.next_poll_at <= current + POLL_GRACE_SECONDS,
                 )
                 .values(lease_token=token, lease_until=current + LEASE_SECONDS)
             ).rowcount
@@ -133,7 +149,10 @@ class OutdoorCollector:
                 configuration.lease_token = None
                 configuration.lease_until = 0
             db.commit()
-            return db.get(OutdoorStation, location_id) if claimed else None
+            if not claimed:
+                return None
+            # Reload: the readiness check cached this row before the lease updates.
+            return db.get(OutdoorStation, location_id, populate_existing=True)
 
     def owned(self, db, station):
         # Obtain a write lock and verify ownership in the same transaction as persistence.
