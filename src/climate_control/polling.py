@@ -9,7 +9,11 @@ from sqlalchemy import delete, select, update
 
 from climate_control.config import WorkerSettings
 from climate_control.db import Account, Automation, Device
-from climate_control.display import global_warning_threshold, should_display_warning
+from climate_control.display import (
+    WARNING_DISPLAY_MODES,
+    global_warning_threshold,
+    should_display_warning,
+)
 from climate_control.history import prune_readings, record_reading
 from climate_control.providers.base import DeviceCommand, DeviceProvider, PollResult, ProviderError
 from climate_control.security import Vault
@@ -19,6 +23,7 @@ LEASE_SECONDS = 300
 POLL_TIMEOUT_SECONDS = 240
 CONTROL_COOLDOWN_SECONDS = 5
 CONTROL_QUEUE_SECONDS = 30
+SUPPORTED_PROVIDERS = ("vesync", "xiaomi")
 
 
 @dataclass
@@ -34,15 +39,21 @@ class Poller:
         sessions,
         settings: WorkerSettings,
         vault: Vault,
-        provider: DeviceProvider,
+        provider: DeviceProvider | dict[str, DeviceProvider],
         outdoor=None,
     ):
         self.sessions = sessions
         self.settings = settings
         self.vault = vault
-        self.provider = provider
+        self.providers = provider if isinstance(provider, dict) else None
+        self.provider = provider["vesync"] if isinstance(provider, dict) else provider
         self.outdoor = outdoor
         self.concurrency = asyncio.Semaphore(3)
+
+    def provider_for(self, provider_name: str) -> DeviceProvider:
+        if self.providers is not None:
+            return self.providers[provider_name]
+        return self.provider
 
     def claim(self, account_id: str) -> tuple[Account | None, RefreshResult]:
         current = time.time()
@@ -84,7 +95,8 @@ class Poller:
                 return decision
             try:
                 async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
-                    result = await self.provider.poll(
+                    adapter = self.provider_for(account.provider)
+                    result = await adapter.poll(
                         self.vault.open(account.credentials),
                         self.vault.open(account.tokens) if account.tokens else None,
                     )
@@ -147,7 +159,7 @@ class Poller:
                 lease_token = str(uuid4())
                 conditions = [
                     Account.id == device.account_id,
-                    Account.provider == "vesync",
+                    Account.provider.in_(SUPPORTED_PROVIDERS),
                     Account.status != "auth_error",
                     Account.lease_until <= current,
                     # User commands cannot bypass a provider's rate-limit backoff.
@@ -186,12 +198,13 @@ class Poller:
                 provider_id = device.provider_id
             try:
                 async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
+                    adapter = self.provider_for(account.provider)
                     credentials = self.vault.open(account.credentials)
                     tokens = self.vault.open(account.tokens) if account.tokens else None
                     if command is None:
-                        result = await self.provider.status(credentials, tokens, provider_id)
+                        result = await adapter.status(credentials, tokens, provider_id)
                     else:
-                        result = await self.provider.control(
+                        result = await adapter.control(
                             credentials, tokens, provider_id, command
                         )
             except ProviderError as exc:
@@ -219,13 +232,15 @@ class Poller:
                 result.control_confirmed,
             )
 
-    async def actuate_display_warnings(self, actions: list[tuple[str, bool]]) -> None:
-        for device_id, desired in actions:
-            target = "on" if desired else "off"
+    async def actuate_display_warnings(self, actions: list[tuple[str, str]]) -> None:
+        for device_id, target in actions:
+            command_display: bool | str = (
+                True if target == "on" else False if target == "off" else target
+            )
 
             def guard(db, device, _now, target=target):
                 return (
-                    device.display_mode == "warnings_only"
+                    device.display_mode in WARNING_DISPLAY_MODES
                     and device.state.get("power") == "on"
                     and device.state.get("connectivity") != "offline"
                     and device.state.get("display") != target
@@ -233,7 +248,7 @@ class Poller:
 
             await self.control(
                 device_id,
-                DeviceCommand(display=desired),
+                DeviceCommand(display=command_display),
                 guard=guard,
                 enforce_cooldown=False,
                 reset_display_mode=False,
@@ -247,9 +262,9 @@ class Poller:
         complete: bool = True,
         actuate_warnings: bool = True,
         reset_display_mode: str | None = None,
-    ) -> list[tuple[str, bool]]:
+    ) -> list[tuple[str, str]]:
         current = time.time()
-        actions: list[tuple[str, bool]] = []
+        actions: list[tuple[str, str]] = []
         with self.sessions() as db:
             # Fencing: a late worker cannot overwrite a new lease's results or a deleted account.
             owned = db.execute(
@@ -270,6 +285,9 @@ class Poller:
                 if failure.kind == "auth":
                     account.status = "auth_error"
                     account.tokens = None
+                elif failure.kind in {"auth_2fa", "auth_2fa_invalid"}:
+                    account.status = "auth_error"
+                    account.next_poll_at = 0
                 elif failure.kind == "rate_limit":
                     account.status = "rate_limited"
                     account.rate_limit_count += 1
@@ -341,7 +359,7 @@ class Poller:
                         device.display_mode = "manual"
                     elif (
                         actuate_warnings
-                        and device.display_mode == "warnings_only"
+                        and device.display_mode in WARNING_DISPLAY_MODES
                         and device.state.get("power") == "on"
                         and (device.controls or {}).get("display")
                     ):
@@ -350,8 +368,12 @@ class Poller:
                             device.state or {},
                             device.warning_threshold or global_threshold,
                         )
-                        if desired is not None and observed_display != ("on" if desired else "off"):
-                            actions.append((device.id, desired))
+                        if desired is not None:
+                            target_display = (
+                                WARNING_DISPLAY_MODES[device.display_mode] if desired else "off"
+                            )
+                            if observed_display != target_display:
+                                actions.append((device.id, target_display))
             # A failed or incomplete poll never removes existing devices.
             if complete and failure is None:
                 seen = {snapshot.provider_id for snapshot in result.devices}

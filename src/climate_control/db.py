@@ -20,10 +20,18 @@ class Base(DeclarativeBase):
 
 class Account(Base):
     __tablename__ = "accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "email",
+            "country_code",
+            name="uq_accounts_provider_email_country",
+        ),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     label: Mapped[str] = mapped_column(String(100))
     provider: Mapped[str] = mapped_column(String(50), server_default="vesync")
-    email: Mapped[str] = mapped_column(String(254), unique=True)
+    email: Mapped[str] = mapped_column(String(254))
     country_code: Mapped[str] = mapped_column(String(2))
     time_zone: Mapped[str] = mapped_column(String(100))
     credentials: Mapped[str] = mapped_column(String)
@@ -56,7 +64,7 @@ class Device(Base):
     controls: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     state: Mapped[dict] = mapped_column(JSON, default=dict)
     display_mode: Mapped[str] = mapped_column(
-        String(20), default="manual", server_default="manual"
+        String(30), default="manual", server_default="manual"
     )
     warning_threshold: Mapped[str | None] = mapped_column(String(30), nullable=True)
     retrieved_at: Mapped[float | None] = mapped_column(nullable=True)
@@ -84,6 +92,8 @@ class DeviceReading(Base):
     pm1: Mapped[float | None] = mapped_column(nullable=True)
     pm10: Mapped[float | None] = mapped_column(nullable=True)
     air_quality: Mapped[float | None] = mapped_column(nullable=True)
+    temperature: Mapped[float | None] = mapped_column(nullable=True)
+    humidity: Mapped[float | None] = mapped_column(nullable=True)
     power: Mapped[str | None] = mapped_column(String(10), nullable=True)
     mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
     fan_level: Mapped[int | None] = mapped_column(nullable=True)

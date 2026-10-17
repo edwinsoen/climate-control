@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import type { Account, ProviderId } from '../types'
 import { VeSyncFields, veSyncCredentials } from './vesync'
+import { XiaomiFields, xiaomiCredentials } from './xiaomi'
 
 type ProviderDefinition = {
   id: ProviderId
@@ -16,6 +17,12 @@ export const providers: Record<ProviderId, ProviderDefinition> = {
     name: 'VeSync',
     Fields: VeSyncFields,
     credentials: veSyncCredentials,
+  },
+  xiaomi: {
+    id: 'xiaomi',
+    name: 'Xiaomi Home',
+    Fields: XiaomiFields,
+    credentials: xiaomiCredentials,
   },
 }
 

@@ -13,6 +13,12 @@ export type VeSyncAccount = AccountStatus & {
   time_zone: string
 }
 
-// Extend this union when another provider is implemented.
-export type Account = VeSyncAccount
+export type XiaomiAccount = AccountStatus & {
+  provider: 'xiaomi'
+  email: string
+  country_code: string
+  time_zone: string
+}
+
+export type Account = VeSyncAccount | XiaomiAccount
 export type ProviderId = Account['provider']

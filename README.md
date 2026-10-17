@@ -1,6 +1,6 @@
 # Climate Control
 
-Private household app for Levoit purifiers through VeSync, optional outdoor AQI from AQICN, and per-device rules. The React UI shows cached status and history; a poller collects readings and runs rules. Rules can be edited in the UI or maintained by a built-in ADK agent for devices marked agent-managed, and external agents can use the same tools over MCP. Weather and other providers are planned. See the [product scope](docs/PRD.md), [service behavior](docs/FOUNDATION.md), [automation contract](docs/AUTOMATION.md), and [agents](docs/AGENT.md).
+Private household app for Levoit purifiers through VeSync and Xiaomi (international) purifiers through Xiaomi Home, optional outdoor AQI from AQICN, and per-device rules. The React UI shows cached status and history; a poller collects readings and runs rules. Rules can be edited in the UI or maintained by a built-in ADK agent for devices marked agent-managed, and external agents can use the same tools over MCP. Weather and other providers are planned. See the [product scope](docs/PRD.md), [service behavior](docs/FOUNDATION.md), [automation contract](docs/AUTOMATION.md), and [agents](docs/AGENT.md).
 
 ## Run locally
 
@@ -19,7 +19,7 @@ Put the generated `ENCRYPTION_KEY` and `ADMIN_PASSWORD_HASH` in `.env` (single-q
 docker compose up --build -d
 ```
 
-Sign in and connect an account already paired with purifiers in the VeSync app. Select its country and time zone. Keep the encryption key with database backups; stored credentials cannot be decrypted without it. Compose runs migrations automatically.
+Sign in and connect an account already paired with purifiers in the VeSync or Xiaomi Home app. Select its country or Xiaomi Cloud server (`SG`, `DE`, `US`, `IN`, `RU`, or `TW`) and time zone. Keep the encryption key with database backups; stored credentials cannot be decrypted without it. Compose runs migrations automatically.
 
 ## Deploy to GCP
 

@@ -1,11 +1,11 @@
 # Climate Control
 
-Private household climate monitoring and control app. Supports Levoit purifiers through VeSync, outdoor AQI through AQICN, deterministic device rules, an ADK rule planner, and agent tools over MCP; other providers and weather are planned. Read `docs/PRD.md` for scope, `docs/FOUNDATION.md` for service behavior, `docs/AUTOMATION.md` for rules, and `docs/AGENT.md` for the planner and MCP.
+Private household climate monitoring and control app. Supports Levoit purifiers through VeSync and Xiaomi (international) purifiers through Xiaomi Cloud, outdoor AQI through AQICN, deterministic device rules, an ADK rule planner, and agent tools over MCP; other providers and weather are planned. Read `docs/PRD.md` for scope, `docs/FOUNDATION.md` for service behavior, `docs/AUTOMATION.md` for rules, and `docs/AGENT.md` for the planner and MCP.
 
 ## Structure
 
 - `src/climate_control/`: FastAPI API, authentication, database, history, and polling.
-- `src/climate_control/providers/`: provider protocol and VeSync adapter using pyvesync.
+- `src/climate_control/providers/`: provider protocol, VeSync adapter using pyvesync, and Xiaomi Cloud MIoT adapter.
 - `src/climate_control/agent/`: shared agent tools, MCP endpoint and access tokens, ADK planner and worker, and the rule-engine skill.
 - `deploy/agent_runtime/`: Agent Runtime entry point staged by `scripts/deploy_agent.py`.
 - `frontend/src/`: React/TypeScript UI; provider connection fields live in `accounts/providers/`.

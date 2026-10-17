@@ -83,7 +83,15 @@ def collect_inputs(db, ruleset, settings, current):
             available = fresh_device(db, device, settings, current) and (
                 source.metric in device.capabilities
             )
-            unit = "rank" if source.metric == "air_quality" else "µg/m³"
+            unit = (
+                "rank"
+                if source.metric == "air_quality"
+                else "°C"
+                if source.metric == "temperature"
+                else "%"
+                if source.metric == "humidity"
+                else "µg/m³"
+            )
             identity = device.id if device else None
         else:
             metric = source.metric.removesuffix("_aqi")
@@ -94,7 +102,17 @@ def collect_inputs(db, ruleset, settings, current):
             )
             identity = station.location_id if station else None
             unit = "AQI"
-        numeric = type(value) in {float, int} and math.isfinite(value) and value >= 0
+        min_val = -50 if source.kind == "device" and source.metric == "temperature" else 0
+        max_val = (
+            100
+            if source.kind == "device" and source.metric in {"temperature", "humidity"}
+            else 10000
+        )
+        numeric = (
+            type(value) in {float, int}
+            and math.isfinite(value)
+            and min_val <= value <= max_val
+        )
         values[key] = {
             "value": value if numeric else None,
             "at": timestamp,

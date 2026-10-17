@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
-type Metric = 'aqi' | 'pm25' | 'pm1' | 'pm10' | 'air_quality'
+export type ChartMetric = 'aqi' | 'pm25' | 'pm1' | 'pm10' | 'temperature' | 'humidity'
+type Metric = ChartMetric | 'air_quality'
 type Point = { recorded_at: number; value: number; min: number; max: number; count: number }
 type Setting = {
   recorded_at: number; end_at: number; power: string | null; mode: string | null
@@ -36,9 +37,18 @@ function valueLabel(value: number, unit: string) {
   return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit}`
 }
 
+const METRIC_LABELS: Record<ChartMetric, string> = {
+  aqi: 'AQI',
+  pm25: 'PM2.5',
+  pm1: 'PM1',
+  pm10: 'PM10',
+  temperature: 'Temperature',
+  humidity: 'Humidity',
+}
+
 export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, metric = 'pm25', historyPath, unit = 'µg/m³', metricSelector }: {
   deviceId: string; name: string; capabilities: string[]; fetchHistory: FetchHistory
-  metric?: 'aqi' | 'pm25' | 'pm10'; historyPath?: string; unit?: string
+  metric?: ChartMetric; historyPath?: string; unit?: string
   metricSelector?: ReactNode
 }) {
   const [hours, setHours] = useState(24)
@@ -54,7 +64,8 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, me
   const gradientId = useId().replace(/:/g, '')
   const hasSensor = capabilities.includes(metric)
   const canFetchHistory = hasSensor || !historyPath
-  const metricLabel = metric === 'aqi' ? 'AQI' : `${metric === 'pm25' ? 'PM2.5' : 'PM10'}${unit === 'AQI' ? ' AQI' : ''}`
+  const baseLabel = METRIC_LABELS[metric] ?? metric.toUpperCase()
+  const metricLabel = metric === 'aqi' ? 'AQI' : `${baseLabel}${unit === 'AQI' ? ' AQI' : ''}`
   const historyLabel = historyPath ? metricLabel : hasSensor ? `${metricLabel} & settings` : 'Settings'
 
   useEffect(() => {
@@ -86,7 +97,12 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, me
     const visible = () => { if (!document.hidden) void reload() }
     document.addEventListener('visibilitychange', visible)
     return () => { controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', visible) }
-  }, [deviceId, hours, canFetchHistory, expanded, fetchHistory, historyPath, metric])
+  }, [deviceId, hours, canFetchHistory, expanded, fetchHistory, historyPath])
+
+  useEffect(() => {
+    setActive(null)
+    setActiveTime(null)
+  }, [metric])
 
   const points = history?.metrics[metric] ?? []
   const settings = history?.settings ?? []
@@ -98,8 +114,8 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, me
   const qualityByTime = new Map(history?.metrics.air_quality?.map((point) => [point.recorded_at, point.value]))
   const level = (point: Point) => qualityByTime.get(point.recorded_at) ?? 0
   const qualityClass = (point: Point) => qualityClasses[level(point)] ?? qualityClasses[0]
-  const max = Math.max(5, Math.ceil(Math.max(...points.map((point) => point.max), 0) / 5) * 5)
-  const min = 0
+  const min = Math.min(0, Math.floor(Math.min(...points.map((point) => point.min), 0) / 5) * 5)
+  const max = Math.max(min + 5, Math.ceil(Math.max(...points.map((point) => point.max), 0) / 5) * 5)
   const x = (time: number) => left + (time - (history?.start ?? 0)) / ((history?.end ?? 1) - (history?.start ?? 0)) * (width - left - right)
   const y = (value: number) => top + (max - value) / (max - min) * (height - top - bottom)
   const maxFan = Math.max(1, ...settings.map((setting) => settingFan(setting) ?? 0))
@@ -122,7 +138,7 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, me
     activeTime >= setting.recorded_at && activeTime <= setting.end_at)
   const runningDiffers = selectedSetting?.power === 'on' && selectedSetting.mode === 'manual'
     && selectedSetting.reported_fan_level !== null && selectedSetting.reported_fan_level !== selectedSetting.fan_level
-  const ticks = [0, max / 2, max]
+  const ticks = [min, (min + max) / 2, max]
   const dateLabel = (time: number) => new Date(time * 1000).toLocaleString(undefined, hours === 24
     ? { hour: '2-digit', minute: '2-digit' } : { month: 'short', day: 'numeric' })
 

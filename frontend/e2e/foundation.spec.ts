@@ -411,3 +411,60 @@ test('mobile layout and invalid credentials', async ({ page }) => {
   const width = await page.evaluate(() => document.documentElement.scrollWidth)
   expect(width).toBeLessThanOrEqual(390)
 })
+
+test('connect Xiaomi Home account, inspect temperature and humidity, and use 3-state display and metric selector', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('login-password').fill('test-admin-password')
+  await page.getByTestId('login-submit').click()
+  await page.getByTestId('app-header').getByTestId('connect-account').click()
+  const dialog = page.getByTestId('account-dialog')
+  await dialog.getByTestId('connection-provider').selectOption('xiaomi')
+  await dialog.getByTestId('connection-label').fill('Living Room')
+  await dialog.getByTestId('connection-email').fill('xiaomi@example.com')
+  await dialog.getByTestId('connection-password').fill('xiaomi-test-password')
+  await dialog.getByTestId('connection-country').selectOption('SG')
+  await dialog.getByTestId('connection-time-zone').selectOption('Asia/Singapore')
+  await dialog.getByTestId('connection-submit').click()
+  await expect(dialog).not.toBeVisible()
+
+  const card = deviceCard(page, 'Living Room purifier')
+  await expect(card.getByTestId('device-pm25')).toHaveText('11')
+  await expect(card.getByTestId('device-pm10')).toHaveText('24 µg/m³')
+  await expect(card.getByTestId('device-temperature')).toHaveText('24.5 °C')
+  await expect(card.getByTestId('device-humidity')).toHaveText('55%')
+  await expect(card.getByTestId('device-filter-life')).toHaveText('92%')
+  await expect(card.getByTestId('device-display-status')).toHaveText('bright')
+
+  const fan = card.getByTestId('device-fan')
+  await expect(fan.getByTestId('device-fan-option')).toHaveCount(16)
+  await expect(fan).toHaveValue('fan-6')
+
+  const displaySelect = card.getByTestId('device-display')
+  await expect(displaySelect.getByTestId('device-display-option')).toHaveText([
+    'Bright',
+    'Dim',
+    'Off',
+    'Warnings only (bright)',
+    'Warnings only (dim)',
+  ])
+  await expect(displaySelect).toHaveValue('bright')
+  await displaySelect.selectOption('warnings_only_dim')
+  await expect(displaySelect).toHaveValue('warnings_only_dim')
+  await expect(card.getByTestId('device-display-threshold')).toBeVisible()
+
+  await card.getByTestId('history-toggle').click()
+  await expect(card.getByTestId('history-chart')).toBeVisible()
+  const metricSelect = card.getByTestId('device-history-metric')
+  await expect(metricSelect).toBeVisible()
+  await metricSelect.selectOption('temperature')
+  await expect(metricSelect).toHaveValue('temperature')
+  await metricSelect.selectOption('humidity')
+  await expect(metricSelect).toHaveValue('humidity')
+
+  const session = await (await page.request.get('/api/session')).json()
+  const accounts = await (await page.request.get('/api/accounts')).json()
+  const xiaomi = accounts.find((item: { provider: string }) => item.provider === 'xiaomi')
+  if (xiaomi) {
+    await page.request.delete(`/api/accounts/${xiaomi.id}`, { headers: { 'X-CSRF-Token': session.csrf_token } })
+  }
+})

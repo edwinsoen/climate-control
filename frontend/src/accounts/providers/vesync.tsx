@@ -1,7 +1,7 @@
 import { countryOptions, localTimeZone, timeZoneOptions } from '../../location-options'
-import type { VeSyncAccount } from '../types'
+import type { Account } from '../types'
 
-export function VeSyncFields({ account }: { account: VeSyncAccount | null }) {
+export function VeSyncFields({ account }: { account: Account | null }) {
   return <>
     <label>Email<input data-testid="connection-email" name="email" type="email" autoComplete="username" required maxLength={254} defaultValue={account?.email} readOnly={!!account} /></label>
     <label>Password<input data-testid="connection-password" name="password" type="password" autoComplete="new-password" required maxLength={1024} /></label>

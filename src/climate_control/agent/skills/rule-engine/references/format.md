@@ -61,7 +61,7 @@ controls are rejected. Types are strict: `1` is not `true`, `"3"` is not `3`.
 
 ## Source
 
-- Indoor: `{"kind": "device", "device_id": "<id>", "metric": "pm25" | "pm1" | "pm10" | "air_quality"}`
+- Indoor: `{"kind": "device", "device_id": "<id>", "metric": "pm25" | "pm1" | "pm10" | "air_quality" | "temperature" | "humidity"}`
 - Outdoor (selected station): `{"kind": "outdoor", "metric": "aqi" | "pm25_aqi" | "pm10_aqi"}`
 
 Any device may be a source, not only the target. Referenced devices and metrics

@@ -19,7 +19,8 @@ type Event = { id: number; created_at: number; outcome?: string; inhibition?: st
 type Preview = { decision: { explanation: string; action: Action; trace: { rule_id: string; matches: boolean; in_time: boolean }[] }; target_available: boolean; inputs: Record<string, { available: boolean; value: number | null; unit: string; age_seconds: number | null }> }
 type Api = <T>(path: string, options?: RequestInit) => Promise<T>
 
-const metricLabels: Record<string, string> = { pm25: 'PM2.5 (µg/m³)', pm1: 'PM1 (µg/m³)', pm10: 'PM10 (µg/m³)', air_quality: 'Air quality (rank 1–4)', aqi: 'Overall AQI', pm25_aqi: 'PM2.5 AQI', pm10_aqi: 'PM10 AQI' }
+const INDOOR_METRICS = ['pm25', 'pm1', 'pm10', 'air_quality', 'temperature', 'humidity']
+const metricLabels: Record<string, string> = { pm25: 'PM2.5 (µg/m³)', pm1: 'PM1 (µg/m³)', pm10: 'PM10 (µg/m³)', air_quality: 'Air quality (rank 1–4)', temperature: 'Temperature (°C)', humidity: 'Humidity (%)', aqi: 'Overall AQI', pm25_aqi: 'PM2.5 AQI', pm10_aqi: 'PM10 AQI' }
 const runLabels: Record<string, string> = { running: 'Working on the rules', completed: 'Updated the rules', unchanged: 'Kept the current rules', superseded: 'Stopped after a manual change', failed: 'Could not produce valid rules' }
 const errorLabels: Record<string, string> = { invalid_proposal: 'Could not produce valid rules', timeout: 'Took too long and was stopped', llm_limit: 'Reached the model call limit', model_error: 'The model returned an error', interrupted: 'Stopped when the app restarted', error: 'Stopped by an unexpected error' }
 const toolLabels: Record<string, string> = { list_devices: 'Listed devices', get_device: 'Read device status', get_device_history: 'Read reading history', get_outdoor_air_quality: 'Read outdoor air quality', get_outdoor_history: 'Read outdoor history', get_rule_schema: 'Read the rule schema', get_device_automation: 'Read device rules and context', list_rule_events: 'Read recent activity', preview_rules: 'Tested a draft ruleset' }
@@ -35,7 +36,7 @@ const outcomeLabels: Record<string, string> = { controlled: 'Setting sent', unco
 const triggerLabels = { above: 'Threshold crossed upward', below: 'Threshold crossed downward', sustained: 'Sustained high readings', not_improving: 'High readings without improvement', availability: 'Reading availability changes', failures: 'Repeated command failures' }
 const newId = () => crypto.randomUUID()
 function defaultSource(device: Device): Source {
-  const metric = device.capabilities.find(m => ['pm25', 'pm1', 'pm10', 'air_quality'].includes(m))
+  const metric = device.capabilities.find(m => INDOOR_METRICS.includes(m))
   return metric ? { kind: 'device', device_id: device.id, metric } : { kind: 'outdoor', metric: 'aqi' }
 }
 function newRules(timezone: string): Ruleset {
@@ -58,14 +59,14 @@ function ActionField({ action, controls, onChange }: { action: Action; controls:
 }
 function SourceField({ source, devices, onChange }: { source: Source; devices: Device[]; onChange: (s: Source) => void }) {
   const selected = devices.find(d => d.id === source.device_id)
-  const metrics = source.kind === 'outdoor' ? ['aqi', 'pm25_aqi', 'pm10_aqi'] : (selected?.capabilities ?? []).filter(m => ['pm25', 'pm1', 'pm10', 'air_quality'].includes(m))
+  const metrics = source.kind === 'outdoor' ? ['aqi', 'pm25_aqi', 'pm10_aqi'] : (selected?.capabilities ?? []).filter(m => INDOOR_METRICS.includes(m))
   return <div className="automation-fields">
     <label>Source<select data-testid="rule-source" value={source.kind === 'outdoor' ? 'outdoor' : source.device_id ?? ''} onChange={e => {
       if (e.target.value === 'outdoor') onChange({ kind: 'outdoor', metric: 'aqi' })
       else { const device = devices.find(d => d.id === e.target.value); if (device) onChange(defaultSource(device)) }
     }}>
       {source.kind === 'device' && !selected && <option value={source.device_id ?? ''}>Unavailable device</option>}
-      {devices.filter(d => d.capabilities.some(m => ['pm25', 'pm1', 'pm10', 'air_quality'].includes(m))).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+      {devices.filter(d => d.capabilities.some(m => INDOOR_METRICS.includes(m))).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
       <option value="outdoor">Outdoor station</option>
     </select></label>
     <label>Measurement<select data-testid="rule-metric" value={source.metric} onChange={e => onChange({ ...source, metric: e.target.value })}>
@@ -284,10 +285,11 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
                 {rule.conditions.length > 1 && <p className="rule-hint">All conditions must match.</p>}
                 {rule.conditions.map((condition, ci) => {
                   const update = (value: Condition) => changeRule(index, { ...rule, conditions: rule.conditions.map((c, i) => i === ci ? value : c) })
+                  const condMin = condition.source.metric === 'temperature' ? -50 : 0
                   return <div className="automation-condition" key={ci} data-testid="rule-condition">
                     <SourceField source={condition.source} devices={devices} onChange={source => update({ ...condition, source })} />
                     <label>Condition<select data-testid="rule-condition-test" value={condition.test ?? 'range'} onChange={e => update({ source: condition.source, test: e.target.value as Condition['test'], ...(e.target.value === 'range' ? { lower: 0 } : {}) })}><option value="range">In range</option><option value="available">Available</option><option value="unavailable">Missing or stale</option></select></label>
-                    {(!condition.test || condition.test === 'range') && <><div className="automation-fields"><NumberField label="At least" value={condition.lower} onChange={lower => update({ ...condition, lower })} /><NumberField label="Below" value={condition.upper} onChange={upper => update({ ...condition, upper })} /></div><p className="rule-hint">Blank means no limit. Missing or stale readings do not match.</p></>}
+                    {(!condition.test || condition.test === 'range') && <><div className="automation-fields"><NumberField label="At least" min={condMin} value={condition.lower} onChange={lower => update({ ...condition, lower })} /><NumberField label="Below" min={condMin} value={condition.upper} onChange={upper => update({ ...condition, upper })} /></div><p className="rule-hint">Blank means no limit. Missing or stale readings do not match.</p></>}
                     <button type="button" className="text-button" data-testid="rule-remove-condition" onClick={() => changeRule(index, { ...rule, conditions: rule.conditions.filter((_, i) => i !== ci) })}>Remove condition</button>
                   </div>
                 })}
@@ -308,12 +310,13 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
               <div className="automation-fields"><NumberField label="Review every (hours)" min={0.5} value={draft.review_after_seconds / 3600} onChange={n => changeDraft({ ...draft, review_after_seconds: Math.round((n ?? 24) * 3600) })} /><NumberField label="Wait between requests (minutes)" min={1} value={draft.reconsideration_cooldown_seconds / 60} onChange={n => changeDraft({ ...draft, reconsideration_cooldown_seconds: Math.round((n ?? 30) * 60) })} /></div>
               {draft.triggers.map((trigger, ti) => {
                 const update = (value: Trigger) => changeDraft({ ...draft, triggers: draft.triggers.map((t, i) => i === ti ? value : t) })
+                const triggerMin = trigger.source?.metric === 'temperature' ? -50 : 0
                 return <fieldset className="automation-condition" key={trigger.id} data-testid="rule-trigger"><legend>Condition {ti + 1}</legend>
                   <label>Trigger<select data-testid="rule-trigger-kind" value={trigger.kind} onChange={e => update({ id: trigger.id, kind: e.target.value as Trigger['kind'], ...(e.target.value === 'failures' ? {} : { source: defaultSource(device) }), readings: 3, window_seconds: 1800 })}>{Object.entries(triggerLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   {trigger.source && <SourceField source={trigger.source} devices={devices} onChange={source => update({ ...trigger, source })} />}
                   <div className="automation-fields">
-                    {!['availability', 'failures'].includes(trigger.kind) && <NumberField label="Threshold" value={trigger.threshold} onChange={threshold => update({ ...trigger, threshold })} />}
-                    {['above', 'below'].includes(trigger.kind) && <NumberField label="Reset threshold" value={trigger.reset} onChange={reset => update({ ...trigger, reset })} />}
+                    {!['availability', 'failures'].includes(trigger.kind) && <NumberField label="Threshold" min={triggerMin} value={trigger.threshold} onChange={threshold => update({ ...trigger, threshold })} />}
+                    {['above', 'below'].includes(trigger.kind) && <NumberField label="Reset threshold" min={triggerMin} value={trigger.reset} onChange={reset => update({ ...trigger, reset })} />}
                     {['sustained', 'not_improving', 'failures'].includes(trigger.kind) && <NumberField label={trigger.kind === 'failures' ? 'Failures' : 'Readings'} min={2} value={trigger.readings} onChange={n => update({ ...trigger, readings: n ?? 3 })} />}
                     {['sustained', 'not_improving'].includes(trigger.kind) && <NumberField label="Within (minutes)" min={1} value={trigger.window_seconds / 60} onChange={n => update({ ...trigger, window_seconds: Math.round((n ?? 30) * 60) })} />}
                     {trigger.kind === 'not_improving' && <NumberField label="Minimum improvement" value={trigger.improvement} onChange={improvement => update({ ...trigger, improvement })} />}

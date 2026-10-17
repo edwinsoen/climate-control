@@ -15,8 +15,28 @@ WarningThresholdId = Literal[
     "who_2005_annual",
     "who_2005_24h",
 ]
-DisplayMode = Literal["manual", "warnings_only"]
-DisplaySelection = Literal["on", "off", "manual", "warnings_only"]
+DisplayMode = Literal[
+    "manual",
+    "warnings_only",
+    "warnings_only_bright",
+    "warnings_only_dim",
+]
+DisplaySelection = Literal[
+    "on",
+    "off",
+    "bright",
+    "dim",
+    "manual",
+    "warnings_only",
+    "warnings_only_bright",
+    "warnings_only_dim",
+]
+WARNING_DISPLAY_MODES: dict[str, str] = {
+    "warnings_only": "on",
+    "warnings_only_bright": "bright",
+    "warnings_only_dim": "dim",
+}
+PHYSICAL_DISPLAY_STATES = {"on", "off", "bright", "dim"}
 
 WARNING_THRESHOLDS: dict[str, dict[str, Any]] = {
     "who_2021_annual": {
@@ -77,7 +97,7 @@ def display_settings_view(db) -> dict[str, Any]:
 
 def device_display_view(device: Device, global_threshold: str) -> dict[str, Any]:
     override = device.warning_threshold
-    mode = "warnings_only" if device.display_mode == "warnings_only" else "manual"
+    mode = device.display_mode if device.display_mode in WARNING_DISPLAY_MODES else "manual"
     return {
         "state": (device.state or {}).get("display"),
         "mode": mode if (device.controls or {}).get("display") else None,

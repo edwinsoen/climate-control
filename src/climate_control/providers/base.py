@@ -7,6 +7,14 @@ class ProviderError(Exception):
 
     MESSAGES = {
         "auth": "Account credentials need attention. Update them to reconnect.",
+        "auth_2fa": (
+            "Xiaomi sent a verification code to your email. "
+            "Enter the verification code to finish connecting."
+        ),
+        "auth_2fa_invalid": (
+            "The Xiaomi verification code was invalid or expired. "
+            "Enter the current verification code, or leave it blank to request a new one."
+        ),
         "rate_limit": "The provider is limiting requests. Updates will resume automatically.",
         "offline": "This device is offline. Previous readings are shown.",
         "temporary": "The provider could not be reached. Updates will retry automatically.",
@@ -38,7 +46,7 @@ class DeviceCommand:
     power: bool | None = None
     mode: str | None = None
     fan_level: int | None = None
-    display: bool | None = None
+    display: bool | str | None = None
 
 
 @dataclass
