@@ -2,6 +2,7 @@ import asyncio
 import logging
 import math
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -27,6 +28,20 @@ CONTROL_QUEUE_SECONDS = 30
 POLL_GRACE_SECONDS = 5
 # Bounds planner starts while a backlog drains; matches the planning lease.
 PLANNER_TRIGGER_SECONDS = 300
+# A tick finishes within the 300s scheduler request, leaving time to persist and release
+# leases. Collection stops early so a hung provider cannot starve rule commands.
+TICK_BUDGET_SECONDS = 240
+COLLECT_BUDGET_SECONDS = 150
+MIN_CALL_SECONDS = 10
+# Monotonic deadline for provider calls within a tick; interactive calls have none.
+call_deadline: ContextVar[float | None] = ContextVar("call_deadline", default=None)
+
+
+def call_timeout() -> float:
+    deadline = call_deadline.get()
+    if deadline is None:
+        return POLL_TIMEOUT_SECONDS
+    return min(POLL_TIMEOUT_SECONDS, deadline - time.monotonic())
 
 
 def poll_due(current: float, due_before: float):
@@ -107,11 +122,14 @@ class Poller:
     ) -> RefreshResult:
         # Acquire a capacity slot before claiming; queued work never holds an expiring lease.
         async with self.concurrency:
+            timeout = call_timeout()
+            if timeout < MIN_CALL_SECONDS:
+                return RefreshResult("busy")  # The account stays due for the next tick.
             account, decision = self.claim(account_id, due_before)
             if account is None:
                 return decision
             try:
-                async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
+                async with asyncio.timeout(timeout):
                     adapter = self.provider_for(account.provider)
                     result = await adapter.poll(
                         self.vault.open(account.credentials),
@@ -168,6 +186,9 @@ class Poller:
         reset_display_mode: bool = True,
     ) -> RefreshResult:
         async with self.concurrency:
+            timeout = call_timeout()
+            if timeout < MIN_CALL_SECONDS:
+                return RefreshResult("busy")
             current = time.time()
             with self.sessions() as db:
                 device = db.get(Device, device_id)
@@ -214,7 +235,7 @@ class Poller:
                     return RefreshResult("cooldown", max(1, math.ceil(deadline - current)))
                 provider_id = device.provider_id
             try:
-                async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
+                async with asyncio.timeout(timeout):
                     adapter = self.provider_for(account.provider)
                     credentials = self.vault.open(account.credentials)
                     tokens = self.vault.open(account.tokens) if account.tokens else None
@@ -401,6 +422,7 @@ class Poller:
         return actions
 
     async def tick(self) -> dict:
+        start = time.monotonic()
         with self.sessions() as db:
             current = time.time()
             from climate_control.db import LoginSession, LoginThrottle, OAuthFlow
@@ -419,12 +441,21 @@ class Poller:
                     )
                 )
             )
-        work = [self.refresh(account_id, due_before=due_before) for account_id in ids]
-        if self.outdoor is not None:
-            work.append(self.outdoor.tick())
-        outcomes = await asyncio.gather(*work)
+        # Tasks created by gather copy the collection deadline.
+        scope = call_deadline.set(start + COLLECT_BUDGET_SECONDS)
+        try:
+            work = [self.refresh(account_id, due_before=due_before) for account_id in ids]
+            if self.outdoor is not None:
+                work.append(self.outdoor.tick())
+            outcomes = await asyncio.gather(*work)
+        finally:
+            call_deadline.reset(scope)
         results = outcomes[: len(ids)]
-        automation_checked = await self.automation.tick() if self.automation else 0
+        scope = call_deadline.set(start + TICK_BUDGET_SECONDS)
+        try:
+            automation_checked = await self.automation.tick() if self.automation else 0
+        finally:
+            call_deadline.reset(scope)
         await self.trigger_planning()
         return {
             "automation_checked": automation_checked,

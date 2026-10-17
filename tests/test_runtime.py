@@ -319,3 +319,50 @@ async def test_google_success_through_firebase_rotates_cookie_and_enforces_csrf(
         ).status_code == 400
         assert (await client.post("/api/logout")).status_code == 200
         assert (await client.get("/api/accounts")).status_code == 401
+
+
+@pytest.fixture
+def short_tick(monkeypatch):
+    from climate_control import polling
+
+    monkeypatch.setattr(polling, "COLLECT_BUDGET_SECONDS", 0.5)
+    monkeypatch.setattr(polling, "TICK_BUDGET_SECONDS", 1.0)
+    monkeypatch.setattr(polling, "MIN_CALL_SECONDS", 0.1)
+
+
+async def hang(*args):
+    await asyncio.Event().wait()
+
+
+async def test_tick_budget_ends_hung_poll_and_releases_lease(
+    app, connected, short_tick, monkeypatch
+):
+    monkeypatch.setattr(app.state.poller.provider, "poll", hang)
+    with app.state.sessions() as db:
+        db.get(Account, connected["id"]).next_poll_at = 0
+        db.commit()
+    async with asyncio.timeout(5):
+        await app.state.poller.tick()
+    with app.state.sessions() as db:
+        account = db.get(Account, connected["id"])
+        assert account.status == "unavailable"
+        assert account.lease_until == 0
+
+
+async def test_tick_budget_ends_hung_rule_command(
+    app, signed_client, controlled_device, short_tick, monkeypatch
+):
+    await setup_rules(signed_client, controlled_device)
+    monkeypatch.setattr(app.state.poller.provider, "control", hang)
+    with app.state.sessions() as db:
+        account = db.get(Account, controlled_device["account_id"])
+        account.next_poll_at = account.next_control_at = 0
+        db.commit()
+    async with asyncio.timeout(5):
+        result = await app.state.poller.tick()
+    assert result["refreshed"] == result["automation_checked"] == 1
+    with app.state.sessions() as db:
+        state = db.get(Automation, controlled_device["id"])
+        assert state.lease_until == 0
+        assert state.runtime["pending"]["outcome"] == "control_failed"
+        assert db.get(Account, controlled_device["account_id"]).lease_until == 0
