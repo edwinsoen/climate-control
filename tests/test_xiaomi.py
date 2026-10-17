@@ -107,8 +107,13 @@ def test_xiaomi_model_normalization_across_international_models():
     assert snap_3h.state["display"] == "bright"
     assert snap_3h.state["air_quality"] == "excellent"
 
-    # Smart Air Purifier 4 Lite (rma1): stepless RPM quantized into 1..10
+    # Smart Air Purifier 4 Lite (rma1): stepless RPM quantized into 1..10 (10 rpm steps)
     spec_4lite = MODEL_SPECS["zhimi.airpurifier.rma1"]
+    for lvl in range(1, 11):
+        for rpm_range in ((300, 2000), (300, 2200)):
+            rpm = level_to_rpm(lvl, rpm_range)
+            assert rpm % 10 == 0
+            assert rpm_to_level(rpm, rpm_range) == lvl
     rpm_for_6 = level_to_rpm(6, spec_4lite.rpm_range)
     assert rpm_to_level(rpm_for_6, spec_4lite.rpm_range) == 6
     snap_4lite = normalize_xiaomi_device(
@@ -172,7 +177,8 @@ def test_xiaomi_model_normalization_across_international_models():
     assert snap_cpa4.state["humidity"] is None
 
     # Negative indoor temperature (-5.5 C) is preserved; out-of-range humidity (>100%) is rejected
-    # MIoT mode 4 (Medium preset) maps to manual; unrecognized raw_aq (-1) falls back to pm25
+    # MIoT mode 4 (Medium preset) maps to preset so manual fan commands are not skipped
+    # Unrecognized raw_aq (-1) falls back to pm25
     snap_subzero = normalize_xiaomi_device(
         {"did": "645608278", "name": "Cold Room", "model": "zhimi.airp.rmb1"},
         spec_rmb1,
@@ -188,7 +194,8 @@ def test_xiaomi_model_normalization_across_international_models():
             (3, 1): 150,
         },
     )
-    assert snap_subzero.state["mode"] == "manual"
+    assert snap_subzero.state["mode"] == "preset"
+    assert not XiaomiProvider.matches_command(snap_subzero, DeviceCommand(fan_level=5))
     assert snap_subzero.state["air_quality"] == "excellent"
     assert snap_subzero.state["temperature"] == -5.5
     assert snap_subzero.state["humidity"] is None
