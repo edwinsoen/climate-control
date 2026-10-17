@@ -1,5 +1,6 @@
 """Scoped bearer tokens for MCP clients, managed from an authenticated browser session."""
 
+import re
 import secrets
 import time
 
@@ -58,6 +59,23 @@ def issue_token(db, body: TokenInput) -> tuple[str, AccessToken]:
     db.add(row)
     db.commit()
     return token, row
+
+
+def ensure_service_token_hash(db, token_hash: str, *, name: str = "agent-runtime") -> AccessToken:
+    """Register or refresh a read-scoped MCP token hash without exposing the raw token."""
+    if not token_hash or not re.fullmatch(r"[0-9a-f]{64}", token_hash):
+        raise ValueError("Supply a 64-character SHA-256 hex digest.")
+    row = db.scalar(select(AccessToken).where(AccessToken.token_hash == token_hash))
+    if row is not None:
+        row.name = name
+        row.scopes = ["read"]
+        row.revoked_at = None
+        row.expires_at = None
+    else:
+        row = AccessToken(name=name, token_hash=token_hash, scopes=["read"])
+        db.add(row)
+    db.commit()
+    return row
 
 
 def verify_access_token(sessions, token: str) -> dict | None:
