@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
+import { Icon } from '../components/Icon'
 
 export type DisplayMode = 'manual' | 'warnings_only' | 'warnings_only_bright' | 'warnings_only_dim'
 export type PhysicalDisplayState = 'on' | 'off' | 'bright' | 'dim'
@@ -34,11 +35,11 @@ const DISPLAY_LABELS: Record<DisplayOption, string> = {
   warnings_only_dim: 'Warnings only (dim)',
 }
 
-export const WARNING_THRESHOLD_OPTIONS: { id: WarningThresholdId; label: string; detail: string }[] = [
-  { id: 'who_2021_24h', label: 'WHO 2021 24-h', detail: 'WHO 2021 24-hour (PM2.5 > 15, PM10 > 45 µg/m³)' },
-  { id: 'who_2021_annual', label: 'WHO 2021 Annual', detail: 'WHO 2021 Annual (PM2.5 > 5, PM10 > 15 µg/m³)' },
-  { id: 'who_2005_24h', label: 'WHO 2005 24-h', detail: 'WHO 2005 24-hour (PM2.5 > 25, PM10 > 50 µg/m³)' },
-  { id: 'who_2005_annual', label: 'WHO 2005 Annual', detail: 'WHO 2005 Annual (PM2.5 > 10, PM10 > 20 µg/m³)' },
+export const WARNING_THRESHOLD_OPTIONS: { id: WarningThresholdId; label: string; name: string; pm25: number; pm10: number }[] = [
+  { id: 'who_2021_24h', label: 'WHO 2021 24-h', name: 'WHO 2021 · 24-hour', pm25: 15, pm10: 45 },
+  { id: 'who_2021_annual', label: 'WHO 2021 Annual', name: 'WHO 2021 · annual', pm25: 5, pm10: 15 },
+  { id: 'who_2005_24h', label: 'WHO 2005 24-h', name: 'WHO 2005 · 24-hour', pm25: 25, pm10: 50 },
+  { id: 'who_2005_annual', label: 'WHO 2005 Annual', name: 'WHO 2005 · annual', pm25: 10, pm10: 20 },
 ]
 
 function matches(command: Command, state: ControlledDevice['state']) {
@@ -58,6 +59,8 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
   const [error, setError] = useState('')
   const [retryAt, setRetryAt] = useState(0)
   const [coolingDown, setCoolingDown] = useState(false)
+  const [sliderLevel, setSliderLevel] = useState<number | null>(null)
+  const ids = useId()
   const deadline = retryAt
   useEffect(() => {
     const remaining = deadline - Date.now()
@@ -106,8 +109,6 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
   }
   const on = state.power === 'on'
   const disabled = pending || coolingDown || !device.control_available || device.state.connectivity === 'offline'
-  const selected = state.mode === 'manual' && levels.includes(Number(state.fan_level))
-    ? `fan-${state.fan_level}` : modes.includes(String(state.mode)) ? String(state.mode) : ''
   const rawDisplay = optimisticDisplay ?? (
     device.display?.mode && WARNING_MODES.has(device.display.mode)
       ? device.display.mode
@@ -146,30 +147,65 @@ export function DeviceControls({ device, onControl, onDisplayChange }: {
     } finally { setPending(false) }
   }
 
+  const modeOptions = [
+    ...(levels.length ? [['manual', 'Manual']] : []),
+    ...(modes.includes('sleep') ? [['sleep', 'Sleep']] : []),
+    ...(modes.includes('auto') ? [['auto', 'Built-in auto']] : []),
+  ] as const
+  const currentMode = String(state.mode ?? '')
+  const currentLevel = Number(state.fan_level)
+  const manualLevel = levels.includes(currentLevel) ? currentLevel : levels[0]
+  const showSpeed = levels.length > 0 && (currentMode === 'manual' || modes.length === 0)
+  const levelIndex = levels.indexOf(sliderLevel ?? currentLevel)
+  const modeDisabled = disabled || !on
+
+  function commitSlider() {
+    if (sliderLevel !== null && sliderLevel !== currentLevel) void control({ fan_level: sliderLevel })
+    setSliderLevel(null)
+  }
+
   return <div className="device-controls" data-testid="device-controls" aria-busy={pending}>
-    {options.power && <div className="device-control-row"><span>Power</span>
-      <button type="button" className="power-control" data-testid="device-power" role="switch" aria-label={`Power for ${device.name}`} aria-checked={on}
-        disabled={disabled} onClick={() => void control({ power: !on })}>
-        <span className="power-track" aria-hidden="true"><span /></span>{on ? 'On' : 'Off'}
-      </button>
+    {options.power && <div className="control-row"><span>Power</span>
+      <button type="button" className="switch" data-testid="device-power" role="switch" aria-label={`Power for ${device.name}`} aria-checked={on}
+        disabled={disabled} onClick={() => void control({ power: !on })}><span aria-hidden="true" /></button>
     </div>}
-    {(modes.length > 0 || levels.length > 0) && <label className="device-control-row"><span>Fan</span>
-      <select data-testid="device-fan" aria-label={`Fan for ${device.name}`} value={selected} disabled={disabled || !on}
-        onChange={(event) => void control(event.target.value.startsWith('fan-')
-          ? { fan_level: Number(event.target.value.slice(4)) } : { mode: event.target.value })}>
-        {!selected && <option value="" disabled>Unknown</option>}
-        {modes.map((mode) => <option data-testid="device-fan-option" key={mode} value={mode}>{mode === 'auto' ? 'Auto' : 'Sleep'}</option>)}
-        {levels.map((level) => <option data-testid="device-fan-option" key={level} value={`fan-${level}`}>Level {level}</option>)}
-      </select>
-    </label>}
-    {options.display && displayOptions.length > 0 && <label className="device-control-row"><span>Display</span>
+    {modeOptions.length > 1 && <div className="control-group"><span id={`${ids}-mode`}>Mode</span>
+      <div className="segmented fill" role="radiogroup" aria-labelledby={`${ids}-mode`}>
+        {modeOptions.map(([mode, label]) => <button key={mode} type="button" role="radio" data-testid={`device-mode-${mode}`}
+          aria-checked={currentMode === mode} disabled={modeDisabled}
+          onClick={() => { if (currentMode !== mode) void control(mode === 'manual' ? { fan_level: manualLevel } : { mode }) }}>{label}</button>)}
+      </div>
+    </div>}
+    {showSpeed && levels.length <= 5 && <div className="control-group"><span id={`${ids}-speed`}>Speed</span>
+      <div className="speed-scale" role="radiogroup" aria-labelledby={`${ids}-speed`}>
+        {levels.map((level) => <button key={level} type="button" role="radio" data-testid={`device-speed-${level}`}
+          aria-checked={currentMode === 'manual' && currentLevel === level} aria-label={`Level ${level}`} disabled={modeDisabled}
+          onClick={() => void control({ fan_level: level })}>{level}</button>)}
+      </div>
+    </div>}
+    {showSpeed && levels.length > 5 && <div className="control-group">
+      <div className="control-group-head"><label htmlFor={`${ids}-slider`}>Speed</label>
+        <span data-testid="device-speed-value"><strong>{levelIndex >= 0 ? `Level ${levels[levelIndex]}` : 'Unknown'}</strong> of {levels[levels.length - 1]}{pending ? ' · sending' : ''}</span></div>
+      <div className="stepper">
+        <button type="button" className="icon-button" data-testid="device-speed-down" aria-label={`Lower speed for ${device.name}`}
+          disabled={modeDisabled || levelIndex <= 0} onClick={() => void control({ fan_level: levels[levelIndex - 1] })}><Icon name="minus" /></button>
+        <input id={`${ids}-slider`} type="range" data-testid="device-speed" min={0} max={levels.length - 1} step={1}
+          value={Math.max(0, levelIndex)} disabled={modeDisabled} aria-valuetext={levelIndex >= 0 ? `Level ${levels[levelIndex]}` : 'Unknown'}
+          onChange={(event) => setSliderLevel(levels[Number(event.target.value)])}
+          onPointerUp={commitSlider} onKeyUp={commitSlider} onBlur={commitSlider} />
+        <button type="button" className="icon-button" data-testid="device-speed-up" aria-label={`Raise speed for ${device.name}`}
+          disabled={modeDisabled || levelIndex >= levels.length - 1} onClick={() => void control({ fan_level: levels[levelIndex < 0 ? 0 : levelIndex + 1] })}><Icon name="plus" /></button>
+      </div>
+      <div className="stepper-ends" aria-hidden="true"><span>{levels[0]}</span><span>{levels[levels.length - 1]}</span></div>
+    </div>}
+    {options.display && displayOptions.length > 0 && <label className="control-select">Display
       <select data-testid="device-display" aria-label={`Display for ${device.name}`} value={selectedDisplay} disabled={disabled || !on}
         onChange={(event) => void changeDisplay({ mode: event.target.value as DisplayOption })}>
         {!selectedDisplay && <option value="" disabled>Unknown</option>}
         {displayOptions.map((mode) => <option data-testid="device-display-option" key={mode} value={mode}>{DISPLAY_LABELS[mode]}</option>)}
       </select>
     </label>}
-    {options.display && WARNING_MODES.has(selectedDisplay) && <label className="device-control-row"><span>Warning target</span>
+    {options.display && WARNING_MODES.has(selectedDisplay) && <label className="control-select">Warning target
       <select data-testid="device-display-threshold" aria-label={`Warning target for ${device.name}`} value={selectedThreshold} disabled={disabled}
         onChange={(event) => void changeDisplay({ warning_threshold: (event.target.value || null) as WarningThresholdId | null })}>
         <option value="">Global default</option>

@@ -39,7 +39,7 @@ export function UserMenu({ identity, onSignOut }: {
           event.preventDefault(); setOpen(true); signOut.current?.focus()
         }
       }}><span aria-hidden="true">{initial}</span></button>
-    {open && <div className="user-dropdown" data-testid="user-menu" id={menuId} role="menu"
+    {open && <div className="menu" data-testid="user-menu" id={menuId} role="menu"
       aria-label="User account" onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault(); setOpen(false); trigger.current?.focus()

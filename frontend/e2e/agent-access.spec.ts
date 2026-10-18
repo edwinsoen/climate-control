@@ -8,9 +8,10 @@ test('create an MCP access token, use it once, and revoke it', async ({ page }) 
   await page.goto('/accounts')
   await page.getByTestId('login-password').fill('test-admin-password')
   await page.getByTestId('login-submit').click()
+  await expect(page).toHaveURL(/\/settings#accounts$/)
   const section = page.getByTestId('agent-access')
-  await expect(section.getByTestId('agent-status')).toContainText('Not configured')
-  await expect(section.getByTestId('mcp-url')).toHaveText('http://127.0.0.1:8091/mcp')
+  await expect(page.getByTestId('agent-status')).toContainText('Not configured')
+  await expect(section.getByTestId('mcp-url')).toHaveValue('http://127.0.0.1:8091/mcp')
 
   const name = `assistant-${test.info().testId}`
   await section.getByTestId('token-name').fill(name)
@@ -19,7 +20,8 @@ test('create an MCP access token, use it once, and revoke it', async ({ page }) 
   const token = await section.getByTestId('token-value').inputValue()
   expect(token).toMatch(/^cc_/)
   const row = section.getByTestId('token-row').filter({ hasText: name })
-  await expect(row).toContainText('Read · Edit rules')
+  await expect(row).toContainText('ReadEdit rules')
+  await expect(row).toContainText('Never used')
 
   const call = () => page.request.post('/mcp', {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },
@@ -28,14 +30,14 @@ test('create an MCP access token, use it once, and revoke it', async ({ page }) 
   expect((await call()).status()).toBe(200)
   await page.reload()
   await expect(section.getByTestId('token-value')).toHaveCount(0)
-  await expect(row).toContainText('Last used')
+  await expect(row).toContainText('Just now')
 
   await row.getByTestId('token-revoke').click()
   await expect(row).toHaveCount(0)
   expect((await call()).status()).toBe(401)
 })
 
-test('rule page shows the planner working and how it worked', async ({ page }) => {
+test('device page shows the planner working and how it worked', async ({ page }) => {
   const steps = [
     { at: 1, kind: 'thought', text: 'Indoor PM2.5 peaks between 18:00 and 21:00.' },
     { at: 2, kind: 'tool', name: 'get_device_history', arguments: '{"hours":168}' },
@@ -69,21 +71,24 @@ test('rule page shows the planner working and how it worked', async ({ page }) =
   } })).json()
   try {
     await page.reload()
-    await page.getByTestId('device-card').filter({ hasText: 'Activity test purifier' }).getByTestId('device-rules-link').click()
+    await page.getByTestId('device-card').filter({ hasText: 'Activity test purifier' }).getByTestId('device-name').click()
 
-    await expect(page.getByTestId('automation-working')).toBeVisible()
-    const activity = page.getByTestId('agent-activity')
-    await expect(activity).toContainText('What the agent is doing')
+    await expect(page.getByTestId('automation-review-status')).toHaveText('Auto is reviewing the plan…')
+    const activity = page.getByTestId('device-activity')
+    await expect(activity.getByTestId('agent-activity')).toContainText('What Auto is doing')
     await expect(activity.getByTestId('agent-run-status')).toHaveText('Working on the rules')
     await expect(activity.getByTestId('agent-steps')).toContainText('Indoor PM2.5 peaks')
     await expect(activity.getByTestId('agent-steps')).toContainText('Read reading history')
+    await page.getByTestId('device-rules-link').click()
+    await expect(page.getByTestId('automation-working')).toBeVisible()
+    await page.goBack()
 
     finished = true
     await expect(activity.getByTestId('agent-run-status')).toHaveText('Updated the rules', { timeout: 10000 })
     await expect(activity).toContainText('test-model · 2 model calls · 12s')
     await page.reload()
     await expect(page.getByTestId('agent-steps')).toBeHidden()
-    await page.getByTestId('agent-activity').getByText('How the agent worked').click()
+    await page.getByTestId('agent-activity').getByText('How Auto worked').click()
     await expect(page.getByTestId('agent-steps')).toContainText('Indoor PM2.5 peaks')
   } finally {
     await page.request.delete(`/api/accounts/${account.id}`, { headers })

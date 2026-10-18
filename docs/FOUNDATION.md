@@ -6,6 +6,8 @@ Local `serve` hosts the compiled React UI and FastAPI routes and runs an in-proc
 
 Normal UI status and history requests read the database. The poller owns provider requests, persistent account leases, pacing, backoff, and snapshot updates. Explicit account actions and device controls use the same protection. The VeSync and Xiaomi Cloud adapters normalize supported purifier readings and capabilities; provider-specific connection fields live in `frontend/src/accounts/providers/`.
 
+The web UI has four pages. **Home** (`/`) shows each purifier's PM2.5, band, setting, 24-hour sparkline, active rule, and quick controls, with outdoor air and today's automation activity beside them; with nothing connected it shows the account form and station search. **Device** (`/devices/{id}`) shows current readings, what automation decided and why, history with fan settings, the plan, controls, activity, and purifier details. **Plan** (`/devices/{id}/rules`) edits the ruleset. **Settings** (`/settings`; `/accounts` redirects) holds accounts, outdoor station, Auto planner status, display warning thresholds, and agent access tokens.
+
 ## API
 
 All `/api` routes require a session except `GET /api/session` and `POST /api/login`. Mutating routes also require `X-CSRF-Token`; `GET /health/live` and `/health/ready` are public. `/mcp` accepts only scoped bearer tokens and ignores cookies.

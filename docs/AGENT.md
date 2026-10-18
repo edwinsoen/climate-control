@@ -61,7 +61,7 @@ Switching a device to agent ownership, or clicking **Request review**, starts pl
 
 ## MCP
 
-Create a token under **Accounts → Agent access**. Choose its scopes, and copy the token, which is shown only once. Revoking a token takes effect immediately. The database stores only token hashes.
+Create a token under **Settings → Agent access**. Choose its scopes, and copy the token, which is shown only once. Revoking a token takes effect immediately. The database stores only token hashes.
 
 | Scope | Tools |
 | --- | --- |

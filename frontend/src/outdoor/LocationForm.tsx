@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Outdoor } from './OutdoorCard'
+import { Icon } from '../components/Icon'
 
 type Station = { location_id: number; name: string; aqi: number; updated_at?: string; measured_at?: string }
 
@@ -14,7 +15,7 @@ function locationError(error: unknown) {
 
 export function LocationForm({ api, onSave, onCancel }: {
   api: <T>(path: string, options?: RequestInit) => Promise<T>
-  onSave: (outdoor: Outdoor) => void; onCancel: () => void
+  onSave: (outdoor: Outdoor) => void; onCancel?: () => void
 }) {
   const [query, setQuery] = useState('')
   const [stations, setStations] = useState<Station[] | null>(null)
@@ -69,30 +70,32 @@ export function LocationForm({ api, onSave, onCancel }: {
   }
 
   return <form className="outdoor-location-form" data-testid="outdoor-location-form" onSubmit={search}>
-    <h3>Set location</h3>
-    <label className="outdoor-city-field">City or station
-      <input type="search" required autoFocus minLength={2} maxLength={120} value={query} placeholder="Search city or station"
-        data-testid="outdoor-city-query" onChange={(event) => edit(event.target.value)} disabled={busy} />
-    </label>
-    <div className="outdoor-location-actions">
-      <button className="button small" data-testid="outdoor-search-stations" disabled={busy || query.trim().length < 2}>Search</button>
-      <button type="button" className="button small" data-testid="outdoor-use-location" onClick={() => void locate()} disabled={busy}>Use my location</button>
-      <button type="button" className="button small" data-testid="outdoor-cancel-location" onClick={onCancel} disabled={busy}>Cancel</button>
+    <div className="search-field">
+      <label>City or station
+        <input type="search" required autoFocus minLength={2} maxLength={120} value={query} placeholder="e.g. Clementi"
+          data-testid="outdoor-city-query" onChange={(event) => edit(event.target.value)} disabled={busy} />
+      </label>
+      <button className="button" data-testid="outdoor-search-stations" disabled={busy || query.trim().length < 2}>Search</button>
+    </div>
+    <div className="actions">
+      <button type="button" className="button small" data-testid="outdoor-use-location" onClick={() => void locate()} disabled={busy}><Icon name="pin" />Use my location</button>
+      {onCancel && <button type="button" className="button small ghost" data-testid="outdoor-cancel-location" onClick={onCancel} disabled={busy}>Cancel</button>}
     </div>
     {busy && <p className="outdoor-loading reading-time" role="status" data-testid="outdoor-location-loading">
       <span className="outdoor-spinner" aria-hidden="true" />{activity}
     </p>}
     {error && <p className="inline-error" role="alert" data-testid="outdoor-location-error">{error}</p>}
-    {stations && stations.length === 0 && <p data-testid="outdoor-no-stations">No reporting stations found. Try another city or station name.</p>}
+    {stations && stations.length === 0 && <p className="subtle" data-testid="outdoor-no-stations">No reporting stations found. Try another city or station name.</p>}
     {stations && stations.length > 0 && <>
       <fieldset className="outdoor-stations"><legend>AQICN stations</legend>
         {stations.map((station) => <label key={station.location_id} className="outdoor-station-option" data-testid="outdoor-station-option">
           <input type="radio" name="outdoor-station" data-testid={`outdoor-station-${station.location_id}`} value={station.location_id} checked={selected === station.location_id}
             onChange={() => setSelected(station.location_id)} disabled={busy} />
-          <span>{station.name}<small>AQI {station.aqi}{station.updated_at && ` · Updated ${station.updated_at}`}</small></span>
+          <span>{station.name}<small className="hint">AQI {station.aqi}{station.updated_at && ` · Updated ${station.updated_at}`}</small></span>
         </label>)}
       </fieldset>
       <button type="button" className="button primary small" data-testid="outdoor-save-location" disabled={busy || selected === null} onClick={() => void save()}>Save location</button>
     </>}
+    {!stations && <p className="hint">AQICN · history starts when selected</p>}
   </form>
 }
