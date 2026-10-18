@@ -3,9 +3,13 @@ import { MoreIcon } from '../components/Icon'
 import { getProvider } from './providers'
 import type { Account } from './types'
 
-function accountStatus(account: Account): string {
+export function accountStatus(account: Account): string {
   return ({ connected: 'Connected', pending: 'Connecting', auth_error: 'Reconnect needed',
     rate_limited: 'Cooling down', unavailable: 'Unavailable' })[account.status] ?? 'Pending'
+}
+
+export function accountBand(account: Account) {
+  return account.status === 'connected' ? 'band-good' : account.status === 'auth_error' ? 'band-unhealthy' : 'band-moderate'
 }
 
 export function AccountCard({ account, purifiers, onReconnect, onRemove }: {
@@ -73,7 +77,6 @@ export function AccountCard({ account, purifiers, onReconnect, onRemove }: {
     items[next]?.focus()
   }
 
-  const statusClass = account.status === 'connected' ? 'band-good' : account.status === 'auth_error' ? 'band-unhealthy' : 'band-moderate'
   return <tbody data-testid="account-card" onKeyDown={(event) => {
     if (confirming && !removing && event.key === 'Escape') {
       event.preventDefault(); cancelRemoval()
@@ -87,7 +90,7 @@ export function AccountCard({ account, purifiers, onReconnect, onRemove }: {
       <td>{provider && account.country_code ? provider.region(account) : 'Not set'}</td>
       <td>{purifiers.length ? purifiers.join(', ') : <span className="hint">None found</span>}</td>
       <td><div className="cell-stack">
-        <span className={`band ${statusClass}`}>{accountStatus(account)}</span>
+        <span className={`band ${accountBand(account)}`}>{accountStatus(account)}</span>
         {account.error && <span className="inline-error">{account.error}</span>}
       </div></td>
       <td className="actions-cell"><div className="account-actions" ref={actions} onBlur={(event) => {

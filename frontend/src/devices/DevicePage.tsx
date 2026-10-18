@@ -4,7 +4,7 @@ import { Icon, type IconName } from '../components/Icon'
 import { ago, clock, plural } from '../format'
 import { AirQualityChart, type ChartMetric } from './AirQualityChart'
 import {
-  automationMode, automationPath, configureMode, conditionText, eventDetail, eventText, inhibitionLabels, isActivity, isPaused,
+  automationMode, automationPath, configureMode, conditionText, eventDetail, eventText, inhibitionLabels, isPaused,
   modeDescriptions, modeLabels, runText, shortActionText, stepText, windowText,
   type AutomationEvent, type AutomationState, type Mode, type Run, type Step,
 } from './automation'
@@ -53,13 +53,14 @@ export function DevicePage({ device, devices, api, onChange }: { device: Device;
     let cancelled = false
     let timer = 0
     const refresh = async () => {
+      let current = stateRef.current
       if (!document.hidden) {
         try {
           const [value, list] = await Promise.all([api<AutomationState>(path), api<AutomationEvent[]>(path + '/events')])
           if (!cancelled) { setState(value); setEvents(list) }
+          current = value
         } catch (err) { if (!cancelled && !stateRef.current) setError((err as Error).message) }
       }
-      const current = stateRef.current
       const active = current?.run?.status === 'running' || ['pending', 'claimed'].includes(current?.job?.status ?? '')
       if (!cancelled) timer = window.setTimeout(() => void refresh(), active ? 3000 : 15000)
     }
@@ -92,7 +93,7 @@ export function DevicePage({ device, devices, api, onChange }: { device: Device;
 
   const ruleset = state?.ruleset
   const deviceName = (id: string | null | undefined) => !id || id === device.id ? null : devices.find((item) => item.id === id)?.name ?? 'Unavailable purifier'
-  const activity = events.filter(isActivity).slice(0, 8)
+  const activity = events.slice(0, 20)
   const runSteps = steps.map((step) => [step, stepText(step)] as const).filter(([, text]) => text)
 
   return <main className="page detail" data-testid="device-page">

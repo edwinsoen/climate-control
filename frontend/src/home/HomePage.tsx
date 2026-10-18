@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import { accountBand, accountStatus } from '../accounts/AccountCard'
 import { ConnectionForm, type AccountConnection } from '../accounts/ConnectionForm'
+import type { Account } from '../accounts/types'
 import { Icon } from '../components/Icon'
 import { automationMode, automationPath, configureMode, isPaused, type AutomationState } from '../devices/automation'
 import { isOffline, type Api, type Device } from '../devices/types'
@@ -24,8 +26,8 @@ function summary(devices: Device[]) {
   return parts.join(', ') + '.'
 }
 
-export function HomePage({ api, devices, outdoor, busy, connectError, onConnect, onDeviceChange, onOutdoorChange, onRefresh }: {
-  api: Api; devices: Device[]; outdoor: Outdoor | null; busy: boolean; connectError: string
+export function HomePage({ api, accounts, devices, outdoor, busy, connectError, notice, onConnect, onDeviceChange, onOutdoorChange, onRefresh }: {
+  api: Api; accounts: Account[]; devices: Device[]; outdoor: Outdoor | null; busy: boolean; connectError: string; notice: string
   onConnect: (connection: AccountConnection) => Promise<void>
   onDeviceChange: (device: Device) => void; onOutdoorChange: (outdoor: Outdoor) => void
   onRefresh: () => Promise<void>
@@ -79,6 +81,17 @@ export function HomePage({ api, devices, outdoor, busy, connectError, onConnect,
             if (!next.delete(device.id)) next.add(device.id)
             return next
           })} onChange={onDeviceChange} onRefresh={onRefresh} />)}
+      </section> : accounts.length > 0 ? <section className="connect-panel" data-testid="home-accounts" aria-labelledby="accounts-title">
+        <div className="connect-panel-head">
+          <span className="tile-icon soft"><Icon name="air" /></span>
+          <div><h2 id="accounts-title">Waiting for purifiers</h2><p>Purifiers appear here once an account finds them.</p></div>
+        </div>
+        {notice && <p className="alert notice" role="status" data-testid="home-notice">{notice}</p>}
+        <ul className="account-status-list">{accounts.map((account) => <li key={account.id} data-testid="home-account">
+          <div><strong>{account.label}</strong>{account.error && <span className="inline-error">{account.error}</span>}</div>
+          <span className={`band ${accountBand(account)}`}>{accountStatus(account)}</span>
+        </li>)}</ul>
+        <a className="button small" href="/settings#accounts">Manage accounts in Settings</a>
       </section> : <section className="connect-panel" data-testid="home-connect" aria-labelledby="connect-title">
         <div className="connect-panel-head">
           <span className="tile-icon soft"><Icon name="air" /></span>

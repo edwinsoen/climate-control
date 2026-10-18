@@ -104,14 +104,21 @@ export function automationPath(deviceId: string) {
   return '/api/devices/' + deviceId + '/automation'
 }
 
+type Configuration = Pick<AutomationState, 'owner' | 'enabled' | 'pause_seconds'>
+
+/** The PUT /automation body: the current settings with overrides, at the current version. */
+export function configurationBody(state: AutomationState, overrides: Partial<Configuration> = {}) {
+  return JSON.stringify({
+    owner: state.owner, enabled: state.enabled, pause_seconds: state.pause_seconds, ...overrides,
+    generation: state.generation, base_revision: state.revision,
+  })
+}
+
 /** Applies a mode with the current version so concurrent edits are rejected. */
 export async function configureMode(api: Api, deviceId: string, mode: Mode, current?: AutomationState): Promise<AutomationState> {
   const state = current ?? await api<AutomationState>(automationPath(deviceId))
   const owner = mode === 'auto' ? 'agent' : mode === 'custom' ? 'manual' : state.owner
-  return api<AutomationState>(automationPath(deviceId), { method: 'PUT', body: JSON.stringify({
-    owner, enabled: mode !== 'off', pause_seconds: state.pause_seconds,
-    generation: state.generation, base_revision: state.revision,
-  }) })
+  return api<AutomationState>(automationPath(deviceId), { method: 'PUT', body: configurationBody(state, { owner, enabled: mode !== 'off' }) })
 }
 
 export const PAUSE_OPTIONS = [900, 3600, 14400, 86400]

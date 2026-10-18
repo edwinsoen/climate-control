@@ -6,8 +6,8 @@ import { Icon } from '../components/Icon'
 import { automationMode } from '../devices/automation'
 import { WARNING_THRESHOLD_OPTIONS, type WarningThresholdId } from '../devices/DeviceControls'
 import type { Api, Device } from '../devices/types'
-import { LocationForm } from '../outdoor/LocationForm'
-import { age, type Outdoor } from '../outdoor/OutdoorCard'
+import { ago } from '../format'
+import { useOutdoorLocation, type Outdoor } from '../outdoor/OutdoorCard'
 
 const SECTIONS = [['accounts', 'Accounts'], ['outdoor', 'Outdoor air'], ['auto', 'Auto planner'], ['warnings', 'Display warnings'], ['agents', 'Agent access']]
 const providerLabels: Record<string, string> = { openrouter: 'OpenRouter', gemini: 'Gemini', remote: 'Agent Runtime' }
@@ -78,32 +78,24 @@ export function SettingsPage({ api, accounts, devices, outdoor, notice, onConnec
 }
 
 function OutdoorSection({ api, outdoor, onChange }: { api: Api; outdoor: Outdoor | null; onChange: (outdoor: Outdoor) => void }) {
-  const [editing, setEditing] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-
-  async function remove() {
-    setBusy(true); setError('')
-    try { onChange(await api<Outdoor>('/api/outdoor/location', { method: 'DELETE' })) }
-    catch (err) { setError((err as Error).message) } finally { setBusy(false) }
-  }
+  const { editing, error, busy, remove, edit, form } = useOutdoorLocation(api, onChange)
 
   const updated = outdoor?.metrics.aqi?.measured_at
   return <section id="outdoor" className="settings-section" aria-labelledby="settings-outdoor-title" data-testid="settings-outdoor">
     <h2 id="settings-outdoor-title">Outdoor air</h2>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {outdoor && !outdoor.available && <p className="subtle">Outdoor data is not connected.</p>}
-    {outdoor?.available && editing && <LocationForm api={api} onCancel={() => setEditing(false)} onSave={(next) => { setEditing(false); onChange(next) }} />}
+    {outdoor?.available && form}
     {outdoor?.available && !editing && <div className="station-row">
       <div>
         <span className="tile-icon soft"><Icon name="pin" /></span>
         <div>
           <strong data-testid="settings-outdoor-station">{outdoor.configured ? outdoor.station?.name ?? 'Connecting station…' : 'No station selected'}</strong>
-          <span className="hint">AQICN / WAQI{updated ? ` · updated ${age(updated).toLowerCase()}` : ''}</span>
+          <span className="hint">AQICN / WAQI{updated ? ` · updated ${ago(updated).toLowerCase()}` : ''}</span>
         </div>
       </div>
       <div className="actions">
-        <button type="button" className="button small" data-testid="settings-outdoor-change" disabled={busy} onClick={() => { setEditing(true); setError('') }}>
+        <button type="button" className="button small" data-testid="settings-outdoor-change" disabled={busy} onClick={edit}>
           {outdoor.configured ? 'Change station' : 'Set location'}</button>
         {outdoor.configured && <button type="button" className="button small ghost danger" data-testid="settings-outdoor-remove" disabled={busy} onClick={() => void remove()}>Remove</button>}
       </div>

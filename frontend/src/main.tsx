@@ -32,7 +32,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState<Account | null | undefined>(undefined)
-  const route = useRoute()
+  const route = currentRoute()
 
   const updateSession = useCallback((value: Session) => {
     sessionRef.current = value
@@ -186,7 +186,7 @@ function App() {
     {error && editing === undefined && route.page !== 'home' && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
     {route.page === 'home' && <>
       {error && editing === undefined && devices.length > 0 && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
-      <HomePage api={api} devices={devices} outdoor={outdoor} busy={busy} connectError={editing === undefined && !devices.length ? error : ''}
+      <HomePage api={api} accounts={accounts} devices={devices} outdoor={outdoor} busy={busy} notice={notice} connectError={editing === undefined && !devices.length ? error : ''}
         onConnect={(connection) => saveAccount(connection, null)} onDeviceChange={changeDevice} onOutdoorChange={changeOutdoor} onRefresh={load} />
     </>}
     {route.page === 'device' && device && <DevicePage key={device.id} device={device} devices={devices} api={api} onChange={changeDevice} />}
@@ -206,17 +206,15 @@ function App() {
 
 type Route = { page: 'home' | 'device' | 'rules' | 'settings'; deviceId?: string }
 
-function useRoute(): Route {
+function currentRoute(): Route {
   const path = window.location.pathname
-  if (path === '/accounts') {
-    // The accounts page became a Settings section.
-    window.history.replaceState(null, '', '/settings#accounts')
-    return { page: 'settings' }
-  }
   if (/^\/settings\/?$/.test(path)) return { page: 'settings' }
   const match = /^\/devices\/([^/]+)(\/rules)?\/?$/.exec(path)
   if (match) return { page: match[2] ? 'rules' : 'device', deviceId: decodeURIComponent(match[1]) }
   return { page: 'home' }
 }
+
+// The accounts page became a Settings section.
+if (window.location.pathname === '/accounts') window.history.replaceState(null, '', '/settings#accounts')
 
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)

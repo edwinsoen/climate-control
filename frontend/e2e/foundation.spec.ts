@@ -140,6 +140,34 @@ test('sign in, connect two accounts, inspect status, reconnect, remove, and sign
   await expect(page.getByTestId('login-title')).toBeVisible()
 })
 
+test('connecting from Home shows the account while its purifiers are still being found', async ({ page }) => {
+  await page.route('**/api/devices', (route) => route.fulfill({ json: [] }))
+  // Other specs share the server, so Home sees only this spec's account.
+  await page.route('**/api/accounts', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue()
+    const response = await route.fetch()
+    const accounts = await response.json()
+    await route.fulfill({ response, json: accounts.filter((account: { label: string }) => account.label === 'Pending home') })
+  })
+  await page.goto('/')
+  await page.getByTestId('login-password').fill('test-admin-password')
+  await page.getByTestId('login-submit').click()
+  const form = page.getByTestId('home-connect')
+  await form.getByTestId('connection-label').fill('Pending home')
+  await form.getByTestId('connection-email').fill('pending-home@example.com')
+  await form.getByTestId('connection-password').fill('vesync-test-password')
+  await form.getByTestId('connection-submit').click()
+  const panel = page.getByTestId('home-accounts')
+  await expect(panel.getByTestId('home-notice')).toBeVisible()
+  await expect(panel.getByTestId('home-account').filter({ hasText: 'Pending home' })).toBeVisible()
+  await expect(page.getByTestId('home-connect')).toHaveCount(0)
+  const session = await (await page.request.get('/api/session')).json()
+  const accounts = await (await page.request.get('/api/accounts')).json()
+  for (const account of accounts.filter((item: { label: string }) => item.label === 'Pending home')) {
+    await page.request.delete(`/api/accounts/${account.id}`, { headers: { 'X-CSRF-Token': session.csrf_token } })
+  }
+})
+
 test('device history charts preserve gaps and show values only on hover', async ({ page }) => {
   const end = Date.now() / 1000
   await page.route('**/api/devices/*/history?hours=*', async (route) => {

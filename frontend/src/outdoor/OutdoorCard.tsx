@@ -4,6 +4,7 @@ import { LocationForm } from './LocationForm'
 import { OutdoorActions } from './OutdoorActions'
 import { aqiBand, BandBadge } from '../bands'
 import { Icon } from '../components/Icon'
+import { ago } from '../format'
 
 export type Outdoor = {
   available: boolean; configured: boolean; source: 'aqicn'; location_id: number | null
@@ -20,12 +21,27 @@ export type Outdoor = {
   backfill: { status: 'unsupported'; error: string | null }
 }
 
-export function age(value: string) {
-  const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 60000))
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes} min ago`
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} hr ago`
-  return `${Math.floor(minutes / 1440)} days ago`
+type Api = <T>(path: string, options?: RequestInit) => Promise<T>
+
+/** Station editing and removal shared by the Home card and the Settings section. */
+export function useOutdoorLocation(api: Api, onChange: (outdoor: Outdoor) => void) {
+  const [editing, setEditing] = useState(false)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function remove() {
+    setBusy(true); setError('')
+    try { onChange(await api<Outdoor>('/api/outdoor/location', { method: 'DELETE' })) }
+    catch (err) { setError((err as Error).message) }
+    finally { setBusy(false) }
+  }
+
+  return {
+    editing, error, busy, remove,
+    edit: () => { setEditing(true); setError('') },
+    form: editing && <LocationForm api={api} onCancel={() => setEditing(false)}
+      onSave={(outdoor) => { setEditing(false); onChange(outdoor) }} />,
+  }
 }
 
 function Measurement({ outdoor, metric }: { outdoor: Outdoor; metric: 'aqi' | 'pm25' | 'pm10' }) {
@@ -39,39 +55,28 @@ function Measurement({ outdoor, metric }: { outdoor: Outdoor; metric: 'aqi' | 'p
     {preview?.updated_at && <span className="reading-time" data-testid="outdoor-aqi-preview-time">Reported {preview.updated_at}</span>}
     {!preview && reading && <span className={`reading-time ${reading.stale ? 'outdoor-stale' : ''}`}
       data-testid={`outdoor-${metric}-age`} title={new Date(reading.measured_at).toLocaleString()}>
-      {age(reading.measured_at)}{reading.stale && ' · Stale'}
+      {ago(reading.measured_at)}{reading.stale && ' · Stale'}
     </span>}
   </>
 }
 
 export function OutdoorCard({ outdoor, api, onChange }: {
-  outdoor: Outdoor; api: <T>(path: string, options?: RequestInit) => Promise<T>
-  onChange: (outdoor: Outdoor) => void
+  outdoor: Outdoor; api: Api; onChange: (outdoor: Outdoor) => void
 }) {
   const [metric, setMetric] = useState<'aqi' | 'pm25' | 'pm10'>('aqi')
-  const [editing, setEditing] = useState(false)
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function remove() {
-    setBusy(true); setError('')
-    try { onChange(await api<Outdoor>('/api/outdoor/location', { method: 'DELETE' })) }
-    catch (err) { setError((err as Error).message) }
-    finally { setBusy(false) }
-  }
+  const { editing, error, busy, remove, edit, form } = useOutdoorLocation(api, onChange)
   const selected = outdoor.capabilities.includes(metric) ? metric : 'aqi'
   const aqi = outdoor.preview?.value ?? outdoor.metrics.aqi?.value
   const showCard = outdoor.configured && !editing
   return <section className="card" aria-labelledby="outdoor-title" data-testid="outdoor-section">
     {!showCard && <div className="card-header"><div><h2 id="outdoor-title">Outdoor air</h2></div></div>}
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {editing && <LocationForm api={api} onCancel={() => setEditing(false)}
-      onSave={(outdoor) => { setEditing(false); onChange(outdoor) }} />}
+    {form}
     {!outdoor.configured && !editing && <>
       <p className="subtle" data-testid="outdoor-no-location">
         {outdoor.available ? 'Set your location to see outdoor air quality.' : 'Outdoor data is not connected.'}
       </p>
-      {outdoor.available && <button className="button small" data-testid="outdoor-set-location" onClick={() => { setEditing(true); setError('') }}>
+      {outdoor.available && <button className="button small" data-testid="outdoor-set-location" onClick={edit}>
         <Icon name="pin" />Set location
       </button>}
     </>}
@@ -79,9 +84,9 @@ export function OutdoorCard({ outdoor, api, onChange }: {
       <div className="card-header">
         <div><h2 id="outdoor-title">Outdoor air</h2></div>
         <div className="actions">
-          {outdoor.metrics.aqi && !outdoor.preview && <span className="reading-time">{age(outdoor.metrics.aqi.measured_at)}</span>}
+          {outdoor.metrics.aqi && !outdoor.preview && <span className="reading-time">{ago(outdoor.metrics.aqi.measured_at)}</span>}
           <OutdoorActions busy={busy} canChange={outdoor.available}
-            onChangeLocation={() => { setEditing(true); setError('') }} onRemove={() => void remove()} />
+            onChangeLocation={edit} onRemove={() => void remove()} />
         </div>
       </div>
       <div className="outdoor-headline">

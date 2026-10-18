@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
 import {
-  actionText, automationMode, automationPath, conditionText, metricLabels, shortActionText, triggerLabels, windowText,
+  actionText, automationMode, automationPath, conditionText, configurationBody, metricLabels, shortActionText, triggerLabels, windowText,
   type Action, type AutomationState, type Condition, type Rule, type Ruleset, type Source, type Trigger,
 } from './automation'
 import type { ControlOptions } from './DeviceControls'
@@ -135,14 +135,13 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
     try { await task() } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
   async function write(suffix: string, body: unknown, method: string) {
-    const value = await api<AutomationState>(path + suffix, { method, body: JSON.stringify(body) })
+    const value = await api<AutomationState>(path + suffix, { method, body: typeof body === 'string' ? body : JSON.stringify(body) })
     loadedVersion.current = { revision: value.revision, generation: value.generation }
     setState(value)
     return value
   }
-  const configure = (current: AutomationState, owner: 'manual' | 'agent', enabled: boolean) => write('', {
-    owner, enabled, pause_seconds: current.pause_seconds, generation: current.generation, base_revision: current.revision,
-  }, 'PUT')
+  const configure = (current: AutomationState, owner: 'manual' | 'agent', enabled: boolean) =>
+    write('', configurationBody(current, { owner, enabled }), 'PUT')
   function changeDraft(value: Ruleset) { setDraft(value); setPreview(null) }
   function changeRule(index: number, value: Rule) {
     if (draft) changeDraft({ ...draft, rules: draft.rules.map((r, i) => i === index ? value : r) })
@@ -156,9 +155,17 @@ export function AutomationPage({ deviceId, api }: { deviceId: string; api: Api }
   // Saving a plan always leaves the device on Custom rules, including a plan Auto wrote.
   async function save() {
     if (!state || !draft) return
+    // Validate before changing ownership so an invalid draft leaves the mode untouched.
+    await api(path + '/preview', { method: 'POST', body: JSON.stringify(draft) })
+    const original = state
     let current = state
     if (current.owner === 'agent') current = await configure(current, 'manual', false)
-    current = await write('/ruleset', { generation: current.generation, base_revision: current.revision, ruleset: draft, reason: 'Updated rules in the editor' }, 'PUT')
+    try {
+      current = await write('/ruleset', { generation: current.generation, base_revision: current.revision, ruleset: draft, reason: 'Updated rules in the editor' }, 'PUT')
+    } catch (err) {
+      if (current !== original) await configure(current, original.owner, original.enabled).catch(() => {})
+      throw err
+    }
     if (!current.enabled) current = await configure(current, 'manual', true)
     setDraft(current.ruleset); setSaved(JSON.stringify(current.ruleset)); setNotice('Plan saved.'); setPreview(null)
   }
