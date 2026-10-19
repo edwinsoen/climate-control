@@ -53,7 +53,8 @@ export function eventDetail(event: AutomationEvent) {
   if (event.intent) return event.decision?.explanation ?? ''
   if (event.inhibition === 'manual_pause' && event.paused_until) return 'Auto paused until ' + new Date(event.paused_until * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
   if (event.outcome && event.decision?.explanation) return event.decision.explanation
-  if (event.inhibition) return inhibitionLabels[event.inhibition] ?? ''
+  // Without an explanation, eventText already shows the inhibition label.
+  if (event.inhibition && event.decision?.explanation) return inhibitionLabels[event.inhibition] ?? ''
   return ''
 }
 
@@ -119,7 +120,11 @@ export function configuration(state: AutomationState, overrides: Partial<Configu
 export async function configureMode(api: Api, deviceId: string, mode: Mode, current?: AutomationState): Promise<AutomationState> {
   const state = current ?? await api<AutomationState>(automationPath(deviceId))
   const owner = mode === 'auto' ? 'agent' : mode === 'custom' ? 'manual' : state.owner
-  return api<AutomationState>(automationPath(deviceId), { method: 'PUT', body: JSON.stringify(configuration(state, { owner, enabled: mode !== 'off' })) })
+  return putConfiguration(api, deviceId, state, { owner, enabled: mode !== 'off' })
+}
+
+export function putConfiguration(api: Api, deviceId: string, state: AutomationState, overrides: Partial<Configuration>) {
+  return api<AutomationState>(automationPath(deviceId), { method: 'PUT', body: JSON.stringify(configuration(state, overrides)) })
 }
 
 export const PAUSE_OPTIONS = [900, 3600, 14400, 86400]
