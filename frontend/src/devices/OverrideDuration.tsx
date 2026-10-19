@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { automationPath, configurationBody, durationText, PAUSE_OPTIONS, type AutomationState } from './automation'
+import { automationPath, configuration, durationText, PAUSE_OPTIONS, type AutomationState } from './automation'
 import type { Api } from './types'
 
 /** How long a manual control change pauses automation for this device. */
@@ -13,7 +13,7 @@ export function OverrideDuration({ api, deviceId, state, onChange, label = 'Over
   async function update(seconds: number) {
     setBusy(true); setError('')
     try {
-      onChange(await api<AutomationState>(automationPath(deviceId), { method: 'PUT', body: configurationBody(state, { pause_seconds: seconds }) }))
+      onChange(await api<AutomationState>(automationPath(deviceId), { method: 'PUT', body: JSON.stringify(configuration(state, { pause_seconds: seconds })) }))
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
 

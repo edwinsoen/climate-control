@@ -185,8 +185,8 @@ function App() {
     </div></header>
     {error && editing === undefined && route.page !== 'home' && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
     {route.page === 'home' && <>
-      {error && editing === undefined && devices.length > 0 && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
-      <HomePage api={api} accounts={accounts} devices={devices} outdoor={outdoor} busy={busy} notice={notice} connectError={editing === undefined && !devices.length ? error : ''}
+      {error && editing === undefined && (devices.length > 0 || accounts.length > 0) && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
+      <HomePage api={api} accounts={accounts} devices={devices} outdoor={outdoor} busy={busy} notice={notice} connectError={editing === undefined && !accounts.length ? error : ''}
         onConnect={(connection) => saveAccount(connection, null)} onDeviceChange={changeDevice} onOutdoorChange={changeOutdoor} onRefresh={load} />
     </>}
     {route.page === 'device' && device && <DevicePage key={device.id} device={device} devices={devices} api={api} onChange={changeDevice} />}
