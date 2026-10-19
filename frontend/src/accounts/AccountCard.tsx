@@ -1,14 +1,20 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { MoreIcon } from '../components/Icon'
 import { getProvider } from './providers'
 import type { Account } from './types'
 
-function accountStatus(account: Account): string {
+export function accountStatus(account: Account): string {
   return ({ connected: 'Connected', pending: 'Connecting', auth_error: 'Reconnect needed',
     rate_limited: 'Cooling down', unavailable: 'Unavailable' })[account.status] ?? 'Pending'
 }
 
-export function AccountCard({ account, onReconnect, onRemove }: {
+export function accountBand(account: Account) {
+  return account.status === 'connected' ? 'band-good' : account.status === 'auth_error' ? 'band-unhealthy' : 'band-moderate'
+}
+
+export function AccountCard({ account, purifiers, onReconnect, onRemove }: {
   account: Account
+  purifiers: string[]
   onReconnect: (account: Account) => void
   onRemove: (account: Account) => Promise<boolean>
 }) {
@@ -71,44 +77,48 @@ export function AccountCard({ account, onReconnect, onRemove }: {
     items[next]?.focus()
   }
 
-  return <article className="account-row" data-testid="account-card" onKeyDown={(event) => {
+  return <tbody data-testid="account-card" onKeyDown={(event) => {
     if (confirming && !removing && event.key === 'Escape') {
       event.preventDefault(); cancelRemoval()
     }
   }}>
-    <div className="account-description">
-      <h3 data-testid="account-name">{account.label}</h3>
-      <p data-testid="account-provider">{provider?.name ?? 'Unsupported provider'}</p>
-      {account.error && <p className="inline-error">{account.error}</p>}
-    </div>
-    <span className={`badge ${account.status === 'connected' ? 'good' : 'muted'}`}>{accountStatus(account)}</span>
-    <div className="account-actions" ref={actions} onBlur={(event) => {
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
-    }}>
-      <button type="button" className="account-menu-trigger" data-testid="account-actions" ref={trigger} aria-label={`Actions for ${account.label}`}
-        disabled={removing}
-        aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
-        onClick={() => { setConfirming(false); focusLast.current = false; setOpen(!open) }}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault(); setConfirming(false); focusLast.current = event.key === 'ArrowUp'; setOpen(true)
-          }
-        }}>
-        <svg className="account-menu-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
-        </svg>
-      </button>
-      {open && <div className="account-menu" data-testid="account-menu" id={menuId} role="menu" aria-label={`Actions for ${account.label}`} ref={menu} onKeyDown={menuKey}>
-        <button type="button" role="menuitem" data-testid="account-reconnect" disabled={!provider} onClick={() => { close(); onReconnect(account) }}>Reconnect</button>
-        <button type="button" role="menuitem" data-testid="account-remove" className="danger" onClick={() => { close(); setConfirming(true) }}>Remove</button>
-      </div>}
-    </div>
-    {confirming && <div className="account-remove-confirmation" data-testid="account-remove-confirmation" role="group" aria-labelledby={confirmationId} aria-busy={removing}>
-      <p id={confirmationId}>Remove {account.label} and its saved credentials?</p>
-      <div className="confirmation-buttons">
-        <button type="button" className="button" data-testid="account-cancel-remove" ref={cancel} disabled={removing} onClick={cancelRemoval}>Cancel</button>
-        <button type="button" className="button danger" data-testid="account-confirm-remove" disabled={removing} onClick={() => void confirmRemoval()}>{removing ? 'Removing…' : 'Remove account'}</button>
+    <tr>
+      <td><div className="cell-stack">
+        <strong data-testid="account-name">{account.label}</strong>
+        <span data-testid="account-provider">{provider ? `${provider.name} · ${provider.detail}` : 'Unsupported provider'}</span>
+      </div></td>
+      <td>{provider && account.country_code ? provider.region(account) : 'Not set'}</td>
+      <td>{purifiers.length ? purifiers.join(', ') : <span className="hint">None found</span>}</td>
+      <td><div className="cell-stack">
+        <span className={`band ${accountBand(account)}`}>{accountStatus(account)}</span>
+        {account.error && <span className="inline-error">{account.error}</span>}
+      </div></td>
+      <td className="actions-cell"><div className="account-actions" ref={actions} onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
+      }}>
+        <button type="button" className="icon-button bare" data-testid="account-actions" ref={trigger} aria-label={`Actions for ${account.label}`}
+          disabled={removing}
+          aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+          onClick={() => { setConfirming(false); focusLast.current = false; setOpen(!open) }}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault(); setConfirming(false); focusLast.current = event.key === 'ArrowUp'; setOpen(true)
+            }
+          }}><MoreIcon /></button>
+        {open && <div className="menu" data-testid="account-menu" id={menuId} role="menu" aria-label={`Actions for ${account.label}`} ref={menu} onKeyDown={menuKey}>
+          <button type="button" role="menuitem" data-testid="account-reconnect" disabled={!provider} onClick={() => { close(); onReconnect(account) }}>Reconnect</button>
+          <button type="button" role="menuitem" data-testid="account-remove" className="danger" onClick={() => { close(); setConfirming(true) }}>Remove</button>
+        </div>}
+      </div></td>
+    </tr>
+    {confirming && <tr className="account-remove-confirmation"><td colSpan={5}>
+      <div className="confirm" data-testid="account-remove-confirmation" role="group" aria-labelledby={confirmationId} aria-busy={removing}>
+        <p id={confirmationId}>Remove {account.label} and its saved credentials?</p>
+        <div className="actions">
+          <button type="button" className="button small" data-testid="account-cancel-remove" ref={cancel} disabled={removing} onClick={cancelRemoval}>Cancel</button>
+          <button type="button" className="button small danger" data-testid="account-confirm-remove" disabled={removing} onClick={() => void confirmRemoval()}>{removing ? 'Removing…' : 'Remove account'}</button>
+        </div>
       </div>
-    </div>}
-  </article>
+    </td></tr>}
+  </tbody>
 }

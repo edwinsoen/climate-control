@@ -1,112 +1,22 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
 import { ConnectionForm, type AccountConnection } from './accounts/ConnectionForm'
-import { AccountCard } from './accounts/AccountCard'
 import type { Account } from './accounts/types'
-import { AirQualityChart, type ChartMetric } from './devices/AirQualityChart'
-import { DeviceControls, WARNING_THRESHOLD_OPTIONS, type ControlOptions, type DeviceDisplay, type WarningThresholdId } from './devices/DeviceControls'
-import { AutomationPage, type AutomationSummary } from './devices/AutomationPage'
-import { AgentAccess } from './agent/AgentAccess'
+import { BrandLogo, Icon } from './components/Icon'
+import { AutomationPage } from './devices/AutomationPage'
+import { DevicePage } from './devices/DevicePage'
+import { newerDevice, type Device } from './devices/types'
+import { HomePage } from './home/HomePage'
+import type { Outdoor } from './outdoor/OutdoorCard'
+import { SettingsPage } from './settings/SettingsPage'
 import { UserMenu } from './UserMenu'
-import { OutdoorCard, type Outdoor } from './outdoor/OutdoorCard'
-import { CardHeader } from './components/CardHeader'
-import { AirReading } from './components/AirReading'
 import './styles.css'
 
 type Session = {
   authenticated: boolean; identity: string | null; csrf_token: string | null
   google_enabled: boolean; local_enabled: boolean
-}
-type Device = {
-  id: string; account_id: string; account_label: string; name: string; model: string
-  supported: boolean; capabilities: string[]; state: Record<string, string | number | null>
-  display?: DeviceDisplay
-  retrieved_at: string | null; stale: boolean; error: string | null
-  automation?: AutomationSummary
-  controls: ControlOptions; control_available: boolean; control_retry_at: string | null
-}
-
-function newerDevice(current: Device | undefined, incoming: Device): Device {
-  return current && (Date.parse(current.retrieved_at ?? '') || 0) > (Date.parse(incoming.retrieved_at ?? '') || 0) ? current : incoming
-}
-
-function Icon({ kind = 'air' }: { kind?: 'air' | 'arrow' | 'plus' }) {
-  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
-    {kind === 'air' && <><path d="M3 8h12a3 3 0 1 0-3-3M3 12h16a3 3 0 1 1-3 3M3 16h6a3 3 0 1 1-3 3" /></>}
-    {kind === 'arrow' && <><path d="m14 5 7 7-7 7M3 12h18" /></>}
-    {kind === 'plus' && <path d="M12 5v14M5 12h14" />}
-  </svg>
-}
-
-function ago(value: string | null): string {
-  if (!value) return 'No reading yet'
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000))
-  if (seconds < 60) return 'Just now'
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hr ago`
-  return `${Math.floor(seconds / 86400)} days ago`
-}
-
-const DEVICE_CHART_METRICS: { id: ChartMetric; label: string; unit: string }[] = [
-  { id: 'pm25', label: 'PM2.5', unit: 'µg/m³' },
-  { id: 'pm10', label: 'PM10', unit: 'µg/m³' },
-  { id: 'pm1', label: 'PM1', unit: 'µg/m³' },
-  { id: 'temperature', label: 'Temperature', unit: '°C' },
-  { id: 'humidity', label: 'Humidity', unit: '%' },
-]
-
-function DeviceCard({ device, api, onChange }: { device: Device; api: <T>(path: string, options?: RequestInit) => Promise<T>; onChange: (device: Device) => void }) {
-  const [chartMetric, setChartMetric] = useState<ChartMetric>('pm25')
-  const availableChartMetrics = DEVICE_CHART_METRICS.filter((item) => device.capabilities.includes(item.id))
-  const activeMetric = availableChartMetrics.find((item) => item.id === chartMetric) ?? availableChartMetrics[0] ?? DEVICE_CHART_METRICS[0]
-  const offline = device.state.connectivity === 'offline'
-  const status = !device.supported ? 'Unsupported' : offline ? 'Offline' : device.stale ? 'Stale' : 'Connected'
-  const reading = (key: string, suffix = '') => {
-    if (!device.capabilities.includes(key)) return 'Not supported'
-    const value = device.state[key]
-    return value === null || value === undefined || value === 'unknown' ? 'Unknown' : `${value}${suffix}`
-  }
-  return <article className="device-card" data-testid="device-card">
-    <CardHeader name={device.name} testId="device-name" description={<>{device.account_label} · {device.model}</>}
-      actions={<span className={`badge ${status === 'Connected' ? 'good' : 'muted'}`}><i />{status}</span>} />
-    {device.supported && <>
-      <AirReading label="PM2.5" value={reading('pm25')} valueTestId="device-pm25"
-        unit={device.capabilities.includes('pm25') && device.state.pm25 != null ? 'µg/m³' : undefined}
-        age={<span className="reading-time">{ago(device.retrieved_at)}{device.stale && device.retrieved_at && ' · Previous readings'}</span>} />
-      <DeviceControls device={device} onControl={async (command) => {
-        const updated = await api<Device & { control_confirmed: boolean }>(`/api/devices/${device.id}/control`, { method: 'POST', body: JSON.stringify(command) })
-        onChange(updated)
-        return { retryAt: updated.control_retry_at, confirmed: updated.control_confirmed }
-      }} onDisplayChange={async (change) => {
-        const updated = await api<Device & { control_confirmed: boolean }>(`/api/devices/${device.id}/display-settings`, { method: 'PUT', body: JSON.stringify(change) })
-        onChange(updated)
-        return { retryAt: updated.control_retry_at, confirmed: updated.control_confirmed }
-      }} />
-      <dl className="device-details">
-        <div><dt>Air quality</dt><dd>{reading('air_quality')}</dd></div>
-        <div><dt>Filter remaining</dt><dd data-testid="device-filter-life">{reading('filter_life', '%')}</dd></div>
-        {device.capabilities.includes('display') && <div><dt>Display</dt><dd data-testid="device-display-status">{reading('display')}</dd></div>}
-        {device.capabilities.includes('pm1') && <div><dt>PM1</dt><dd data-testid="device-pm1">{reading('pm1', ' µg/m³')}</dd></div>}
-        {device.capabilities.includes('pm10') && <div><dt>PM10</dt><dd data-testid="device-pm10">{reading('pm10', ' µg/m³')}</dd></div>}
-        {device.capabilities.includes('temperature') && <div><dt>Temperature</dt><dd data-testid="device-temperature">{reading('temperature', ' °C')}</dd></div>}
-        {device.capabilities.includes('humidity') && <div><dt>Humidity</dt><dd data-testid="device-humidity">{reading('humidity', '%')}</dd></div>}
-      </dl>
-    </>}
-    {device.error && <p className="inline-error">{device.error}</p>}
-    {device.supported && <div className="device-rule-summary">
-      <div><span>Rules · {device.automation?.enabled ? device.automation.owner === 'agent' ? 'Agent-managed' : 'Manual' : 'Disabled'}</span>
-        <a className="text-button" data-testid="device-rules-link" href={'/devices/' + device.id + '/rules'}>Edit rules →</a>
-      </div>
-      {(device.automation?.paused_until ?? 0) > Date.now() / 1000 && <p className="subtle">Paused until {new Date(device.automation!.paused_until * 1000).toLocaleTimeString()}</p>}
-      {device.automation?.enabled && device.automation.summary?.decision && <p className="subtle">{device.automation.summary.decision.explanation}</p>}
-    </div>}
-    <AirQualityChart deviceId={device.id} name={device.name} capabilities={device.capabilities} fetchHistory={api}
-      metric={activeMetric.id} unit={activeMetric.unit}
-      metricSelector={availableChartMetrics.length > 1 && <select aria-label={`History metric for ${device.name}`} data-testid="device-history-metric"
-        value={activeMetric.id} onChange={(event) => setChartMetric(event.target.value as ChartMetric)}>
-        {availableChartMetrics.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-      </select>} />
-  </article>
 }
 
 function App() {
@@ -114,6 +24,7 @@ function App() {
   const sessionRef = useRef<Session | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [devices, setDevices] = useState<Device[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [outdoor, setOutdoor] = useState<Outdoor | null>(null)
   const outdoorRevision = useRef(0)
   const [error, setError] = useState('')
@@ -121,8 +32,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState<Account | null | undefined>(undefined)
-  const accountsPage = window.location.pathname === '/accounts'
-  const rulesDeviceId = /^\/devices\/([^/]+)\/rules\/?$/.exec(window.location.pathname)?.[1]
+  const route = currentRoute()
 
   const updateSession = useCallback((value: Session) => {
     sessionRef.current = value
@@ -155,6 +65,7 @@ function App() {
     setAccounts(nextAccounts)
     if (revision === outdoorRevision.current) setOutdoor(nextOutdoor)
     setDevices((current) => nextDevices.map((incoming) => newerDevice(current.find((item) => item.id === incoming.id), incoming)))
+    setLoaded(true)
   }, [api])
 
   useEffect(() => {
@@ -218,11 +129,11 @@ function App() {
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
 
-  async function saveAccount(connection: AccountConnection) {
+  async function saveAccount(connection: AccountConnection, existing = editing) {
     setBusy(true); setError(''); setNotice('')
     try {
-      const account = await api<Account>(editing ? `/api/accounts/${editing.id}` : '/api/accounts', {
-        method: editing ? 'PUT' : 'POST', body: JSON.stringify(connection),
+      const account = await api<Account>(existing ? `/api/accounts/${existing.id}` : '/api/accounts', {
+        method: existing ? 'PUT' : 'POST', body: JSON.stringify(connection),
       })
       await load()
       if (account.error?.includes('verification code')) {
@@ -241,110 +152,69 @@ function App() {
     catch (err) { setError((err as Error).message); return false }
   }
 
-  const brand = <a className="brand" href="/"><span className="brand-icon"><Icon /></span>climate<span className="brand-light">control</span></a>
+  const changeDevice = (updated: Device) => setDevices((current) => current.map((item) =>
+    item.id === updated.id ? newerDevice(item, updated) : item))
+  const changeOutdoor = (next: Outdoor) => { outdoorRevision.current++; setOutdoor(next) }
+  const brand = <a className="brand" href="/" data-testid="nav-home"><BrandLogo /><span>Climate Control</span></a>
   if (loading) return <main className="loading" aria-live="polite">Loading Climate Control…</main>
   if (!session?.authenticated) return <main className="login-layout">
-    <section className="login-story">{brand}<div>
-      <h1>Manage your<br />climate devices.</h1>
-      <div className="story-lines" aria-hidden="true"><span /><span /><span /></div>
-    </div></section>
-    <section className="login-panel"><div className="login-box">
-      <h2 data-testid="login-title">Sign in</h2>
+    <div className="login-box">
+      <div className="login-heading"><BrandLogo /><h1 data-testid="login-title">Sign in to Climate Control</h1></div>
       {error && <p className="alert error" data-testid="form-error" role="alert">{error}</p>}
       {new URLSearchParams(window.location.search).get('error') === 'google' && <p className="alert error" role="alert">Google sign-in could not be completed. Use an allowed account or try again.</p>}
-      {session?.google_enabled && <a className="button google" href="/auth/google/login">Continue with Google <Icon kind="arrow" /></a>}
-      {session?.google_enabled && session.local_enabled && <p className="divider">or sign in as administrator</p>}
-      {session?.local_enabled && <form onSubmit={login}>
+      {session?.google_enabled && <a className="button full" href="/auth/google/login">Continue with Google</a>}
+      {session?.google_enabled && session.local_enabled && <p className="divider">or as administrator</p>}
+      {session?.local_enabled && <form className="login-form" onSubmit={login}>
         <label>Username<input name="username" autoComplete="username" required defaultValue="admin" /></label>
         <label>Password<input data-testid="login-password" name="password" type="password" autoComplete="current-password" required /></label>
-        <button className="button primary full" data-testid="login-submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}<Icon kind="arrow" /></button>
+        <button className="button primary full" data-testid="login-submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>}
       {!session && <button className="button" onClick={() => window.location.reload()}>Try again</button>}
-    </div></section>
+      <p className="login-note">Private household app. Only approved accounts can sign in.</p>
+    </div>
   </main>
 
+  const device = route.deviceId ? devices.find((item) => item.id === route.deviceId) : undefined
   return <div className="app-shell">
-    <header className="app-header" data-testid="app-header">{brand}<nav aria-label="Main navigation">
-      <a data-testid="nav-overview" href="/" className={!accountsPage ? 'active' : ''}>Overview</a>
-      <a data-testid="nav-accounts" href="/accounts" className={accountsPage ? 'active' : ''}>Accounts</a>
-    </nav>
-    <button className="button primary small header-connect" data-testid="connect-account" onClick={() => { setError(''); setEditing(null) }}><Icon kind="plus" />Connect account</button>
-    <UserMenu identity={session.identity} onSignOut={async () => {
-      try { await api('/api/logout', { method: 'POST' }); updateSession(await api<Session>('/api/session')) }
-      catch (err) { setError((err as Error).message) }
-    }} /></header>
-    <main className="content">
-      {accountsPage && <div className="page-heading"><h1 data-testid="page-title">Connected accounts</h1></div>}
-      {error && editing === undefined && <p className="alert error" data-testid="form-error" role="alert">{error}</p>}
-      {accountsPage && notice && <p className="alert notice" role="status">{notice}</p>}
-      {accountsPage && accounts.length > 0 && <section className="account-list" aria-label="Connected accounts">
-        {accounts.map((account) => <AccountCard key={account.id} account={account}
-          onReconnect={(value) => { setError(''); setEditing(value) }} onRemove={remove} />)}
-      </section>}
-      {rulesDeviceId && <AutomationPage deviceId={rulesDeviceId} api={api} />}
-      {!accountsPage && !rulesDeviceId && outdoor && <OutdoorCard key={outdoor.location_id} outdoor={outdoor} api={api}
-        onChange={(outdoor) => { outdoorRevision.current++; setOutdoor(outdoor) }} />}
-      {!accountsPage && !rulesDeviceId && <section data-testid="devices-section" aria-labelledby="devices-title">
-        <div className="section-heading"><h2 id="devices-title" data-testid="devices-title">Your devices</h2></div>
-        <section className="device-grid" aria-label="Devices">{devices.map((device) => <DeviceCard key={device.id} device={device} api={api}
-          onChange={(updated) => setDevices((current) => current.map((item) =>
-            item.id === updated.id ? newerDevice(item, updated) : item))} />)}</section>
-        {devices.length === 0 && <p className="subtle" data-testid="empty-devices">No devices connected.</p>}
-      </section>}
-      {accountsPage && accounts.length === 0 && <section className="empty-state">
-        <div className="empty-icon"><Icon /></div><h2 data-testid="empty-title">No accounts connected</h2>
-      </section>}
-      {accountsPage && <DisplaySettings api={api} />}
-      {accountsPage && <AgentAccess api={api} />}
-    </main>
+    <header className="app-header" data-testid="app-header"><div className="app-header-inner">{brand}
+      <a className="header-link" data-testid="nav-settings" href="/settings" aria-label="Settings" aria-current={route.page === 'settings' ? 'page' : undefined}><Icon name="settings" large /></a>
+      <UserMenu identity={session.identity} onSignOut={async () => {
+        try { await api('/api/logout', { method: 'POST' }); updateSession(await api<Session>('/api/session')) }
+        catch (err) { setError((err as Error).message) }
+      }} />
+    </div></header>
+    {error && editing === undefined && route.page !== 'home' && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
+    {route.page === 'home' && <>
+      {error && editing === undefined && (devices.length > 0 || accounts.length > 0) && <div className="page-alert"><p className="alert error" data-testid="form-error" role="alert">{error}</p></div>}
+      <HomePage api={api} accounts={accounts} devices={devices} outdoor={outdoor} busy={busy} notice={notice} connectError={editing === undefined && !accounts.length ? error : ''}
+        onConnect={(connection) => saveAccount(connection, null)} onDeviceChange={changeDevice} onOutdoorChange={changeOutdoor} onRefresh={load} />
+    </>}
+    {route.page === 'device' && device && <DevicePage key={device.id} device={device} devices={devices} api={api} onChange={changeDevice} />}
+    {route.page === 'device' && !device && <main className="page"><p className="subtle" role="status">{loaded ? 'This purifier is not connected.' : 'Loading purifier…'}</p></main>}
+    {route.page === 'rules' && <AutomationPage deviceId={route.deviceId!} api={api} />}
+    {route.page === 'settings' && <SettingsPage api={api} accounts={accounts} devices={devices} outdoor={outdoor} notice={notice}
+      onConnect={() => { setError(''); setEditing(null) }} onReconnect={(account) => { setError(''); setEditing(account) }}
+      onRemove={remove} onOutdoorChange={changeOutdoor} />}
     {editing !== undefined && <div className="modal-backdrop"><section className="modal" data-testid="account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
-      <div className="modal-header"><div><h2 id="account-title">{editing ? 'Reconnect account' : 'Connect an account'}</h2></div>
-        <button className="close" aria-label="Close account form" disabled={busy} onClick={() => { setEditing(undefined); setError('') }}>×</button></div>
+      <div className="modal-header"><h2 id="account-title">{editing ? 'Reconnect account' : 'Connect an account'}</h2>
+        <button className="icon-button bare" aria-label="Close account form" disabled={busy} onClick={() => { setEditing(undefined); setError('') }}><Icon name="close" /></button></div>
       {error && <p className="alert error" data-testid="form-error" role="alert">{error}</p>}
       <ConnectionForm key={editing?.id ?? 'new'} account={editing} busy={busy} onSave={saveAccount} />
     </section></div>}
   </div>
 }
 
-function DisplaySettings({ api }: { api: <T>(path: string, options?: RequestInit) => Promise<T> }) {
-  const [threshold, setThreshold] = useState<WarningThresholdId>('who_2021_24h')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+type Route = { page: 'home' | 'device' | 'rules' | 'settings'; deviceId?: string }
 
-  useEffect(() => {
-    void api<{ warning_threshold: WarningThresholdId }>('/api/display-settings')
-      .then((data) => setThreshold(data.warning_threshold))
-      .catch(() => {})
-  }, [api])
-
-  async function update(next: WarningThresholdId) {
-    setBusy(true); setError('')
-    try {
-      const saved = await api<{ warning_threshold: WarningThresholdId }>('/api/display-settings', {
-        method: 'PUT',
-        body: JSON.stringify({ warning_threshold: next }),
-      })
-      setThreshold(saved.warning_threshold)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return <section className="display-settings" data-testid="display-settings" aria-labelledby="display-settings-title">
-    <div className="section-heading"><h2 id="display-settings-title">Display warnings</h2></div>
-    {error && <p className="alert error" role="alert">{error}</p>}
-    <div className="agent-token-form">
-      <label>Default warning threshold
-        <select data-testid="global-warning-threshold" value={threshold} disabled={busy}
-          onChange={(event) => void update(event.target.value as WarningThresholdId)}>
-          {WARNING_THRESHOLD_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.detail}</option>)}
-        </select>
-        <small>Used by devices in Warnings only display mode without a device override.</small>
-      </label>
-    </div>
-  </section>
+function currentRoute(): Route {
+  const path = window.location.pathname
+  if (/^\/settings\/?$/.test(path)) return { page: 'settings' }
+  const match = /^\/devices\/([^/]+)(\/rules)?\/?$/.exec(path)
+  if (match) return { page: match[2] ? 'rules' : 'device', deviceId: decodeURIComponent(match[1]) }
+  return { page: 'home' }
 }
+
+// The accounts page became a Settings section.
+if (window.location.pathname === '/accounts') window.history.replaceState(null, '', '/settings#accounts')
 
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)

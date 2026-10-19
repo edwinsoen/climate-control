@@ -4,11 +4,13 @@ The deterministic engine runs after collection in each local scheduler cycle or 
 
 ## User controls and ownership
 
-**Edit rules** opens a per-device editor for ordered **When**, **If**, and **Then** rules. **Preview rules** validates and explains a draft without provider requests; saving does not enable a disabled device. Timing, review conditions, and JSON import/export are available in the editor.
+Each device page has an automation mode control. **Auto** is agent ownership with automation enabled, **Custom rules** is manual ownership with automation enabled, and **Manual** disables automation while keeping the saved plan. Switching to Auto keeps existing rules and queues planning; without rules, the device holds its setting until a valid proposal arrives. Ownership changes invalidate outstanding proposals. Custom rules requires a saved ruleset.
 
-Each device has one owner: **Manual** or **Agent-managed**. Agent rules become editable after switching to manual ownership. Switching to agent ownership keeps existing rules and queues planning; without rules, the device holds its setting until a valid proposal arrives. Ownership changes invalidate outstanding proposals.
+**Edit plan** (or **Edit as custom** for an Auto plan) opens a per-device editor for ordered **When**, **If**, and **Then** rules. **Test against now** validates and explains a draft without provider requests. Saving switches the device to Custom rules, including a plan Auto wrote. Timing, Auto review conditions, and JSON import/export are available in the editor. A new Auto revision replaces an untouched draft; unsaved edits are kept and the editor asks for a reload.
 
-Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration or pause/resume explicitly. Changes made outside the app do not automatically pause rules.
+Home turns on Auto for every purifier when none is automated, and pauses or resumes automation on all automated purifiers. It lists today's commands, overrides, failures, and planner revisions from each device's events.
+
+Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration ("Changes override Auto for") or pause/resume explicitly. Changes made outside the app do not automatically pause rules.
 
 ## Rule format, version 1
 

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-test('outdoor and device cards keep expanded histories usable on desktop and mobile', async ({ page }, testInfo) => {
+test('outdoor history, device sparkline, and device history stay usable on desktop and mobile', async ({ page }, testInfo) => {
   await page.setExtraHTTPHeaders({ 'X-Test-Client': testInfo.testId })
   const now = new Date().toISOString()
   await page.route('**/api/accounts', (route) => route.fulfill({ json: [] }))
@@ -36,14 +36,19 @@ test('outdoor and device cards keep expanded histories usable on desktop and mob
   await page.getByTestId('login-password').fill('test-admin-password')
   await page.getByTestId('login-submit').click()
   const outdoor = page.getByTestId('outdoor-card')
-  const device = page.getByTestId('device-card')
-  for (const card of [outdoor, device]) {
-    await card.getByTestId('history-toggle').click()
-    await expect(card.getByTestId('history-chart')).toBeVisible()
-  }
+  await expect(page.getByTestId('device-sparkline')).toBeVisible()
+  await outdoor.getByTestId('history-toggle').click()
+  await expect(outdoor.getByTestId('history-chart')).toBeVisible()
   await page.screenshot({ path: 'test-results/cards-desktop.png', fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
-  for (const card of [outdoor, device]) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await page.screenshot({ path: 'test-results/home-mobile.png', fullPage: true })
+  await page.getByTestId('device-name').click()
+  const device = page.getByTestId('device-page')
+  await expect(device.getByTestId('history-chart')).toBeVisible()
+  for (const [card, path] of [[device, '/devices/layout'], [outdoor, '/']] as const) {
+    if (new URL(page.url()).pathname !== path) await page.goto(path)
+    if (card === outdoor) await outdoor.getByTestId('history-toggle').click()
     await expect(card.getByTestId('history-period-30d')).toBeVisible()
     await card.getByTestId('history-period-30d').click()
     await expect(card.getByTestId('history-period-30d')).toHaveAttribute('aria-pressed', 'true')
@@ -55,6 +60,6 @@ test('outdoor and device cards keep expanded histories usable on desktop and mob
     await expect(chart.getByTestId('history-reading')).toContainText('12')
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
-  await page.getByTestId('devices-title').hover()
+  await page.getByTestId('page-title').hover()
   await page.screenshot({ path: 'test-results/cards-mobile.png', fullPage: true })
 })

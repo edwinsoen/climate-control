@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { MoreIcon } from '../components/Icon'
 
 export function OutdoorActions({ busy, canChange, onChangeLocation, onRemove }: {
   busy: boolean; canChange: boolean; onChangeLocation: () => void; onRemove: () => void
@@ -29,7 +30,7 @@ export function OutdoorActions({ busy, canChange, onChangeLocation, onRemove }: 
   return <div className="account-actions" ref={actions} onBlur={(event) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
   }}>
-    <button type="button" className="account-menu-trigger" data-testid="outdoor-actions" ref={trigger}
+    <button type="button" className="icon-button bare" data-testid="outdoor-actions" ref={trigger}
       aria-label="Outdoor location actions" disabled={busy}
       aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
       onClick={() => { focusLast.current = false; setOpen(!open) }} onKeyDown={(event) => {
@@ -37,11 +38,9 @@ export function OutdoorActions({ busy, canChange, onChangeLocation, onRemove }: 
           event.preventDefault(); focusLast.current = event.key === 'ArrowUp'; setOpen(true)
         }
       }}>
-      <svg className="account-menu-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
-      </svg>
+      <MoreIcon />
     </button>
-    {open && <div className="account-menu" data-testid="outdoor-menu" id={menuId}
+    {open && <div className="menu" data-testid="outdoor-menu" id={menuId}
       role="menu" aria-label="Outdoor location actions" ref={menu} onKeyDown={(event) => {
         if (event.key === 'Escape') { event.preventDefault(); close() }
         else if (event.key === 'Tab') close()

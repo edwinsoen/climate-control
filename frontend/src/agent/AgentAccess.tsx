@@ -1,29 +1,21 @@
 import { useEffect, useState } from 'react'
+import { ago } from '../format'
 
 type Api = <T>(path: string, options?: RequestInit) => Promise<T>
 type Token = { id: string; name: string; scopes: string[]; created_at: number; last_used_at: number | null; expires_at: number | null }
-type Status = { enabled: boolean; provider: string | null; runtime: string; model: string | null; mcp_url: string; scopes: string[] }
+export type AgentStatus = { enabled: boolean; provider: string | null; runtime: string; model: string | null; mcp_url: string; scopes: string[] }
 
 const scopeLabels: Record<string, string> = { read: 'Read', control: 'Control devices', rules: 'Edit rules' }
-const providerLabels: Record<string, string> = { openrouter: 'OpenRouter', gemini: 'Gemini', remote: 'Agent Runtime' }
-
-function agentSummary(status: Status) {
-  if (!status.enabled || !status.provider) return 'Not configured. Agent-managed devices wait for an external planner.'
-  return [providerLabels[status.provider] ?? status.provider, status.model].filter(Boolean).join(' · ')
-}
-
-export function AgentAccess({ api }: { api: Api }) {
-  const [status, setStatus] = useState<Status>()
+export function AgentAccess({ api, status }: { api: Api; status: AgentStatus | undefined }) {
   const [tokens, setTokens] = useState<Token[]>([])
   const [name, setName] = useState('')
   const [scopes, setScopes] = useState<string[]>(['read'])
   const [created, setCreated] = useState('')
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'url' | 'token' | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    void api<Status>('/api/agent/status').then(setStatus).catch(() => {})
     void api<Token[]>('/api/access-tokens').then(setTokens).catch(() => {})
   }, [api])
 
@@ -36,7 +28,7 @@ export function AgentAccess({ api }: { api: Api }) {
     event.preventDefault()
     void perform(async () => {
       const token = await api<Token & { token: string }>('/api/access-tokens', { method: 'POST', body: JSON.stringify({ name, scopes }) })
-      setCreated(token.token); setCopied(false); setName('')
+      setCreated(token.token); setCopied(null); setName('')
       setTokens(await api<Token[]>('/api/access-tokens'))
     })
   }
@@ -48,32 +40,45 @@ export function AgentAccess({ api }: { api: Api }) {
     })
   }
 
-  async function copy() {
-    try { await navigator.clipboard.writeText(created); setCopied(true) } catch { setCopied(false) }
+  async function copy(value: string, which: 'url' | 'token') {
+    try { await navigator.clipboard.writeText(value); setCopied(which) } catch { setCopied(null) }
   }
 
-  return <section className="agent-access" data-testid="agent-access" aria-labelledby="agent-access-title">
-    <div className="section-heading"><h2 id="agent-access-title">Agent access</h2></div>
-    {status && <p className="subtle" data-testid="agent-status">Rules agent: {agentSummary(status)}</p>}
-    {status && <p className="subtle">MCP endpoint <code data-testid="mcp-url">{status.mcp_url}</code></p>}
-    {error && <p className="alert error" role="alert">{error}</p>}
-    {created && <div className="alert notice agent-token-created" data-testid="token-created" role="status">
-      <p>Copy this token now. It will not be shown again.</p>
-      <div className="agent-token-copy"><input readOnly value={created} aria-label="New access token" data-testid="token-value" onFocus={e => e.currentTarget.select()} />
-        <button type="button" className="button small" data-testid="token-copy" onClick={() => void copy()}>{copied ? 'Copied' : 'Copy'}</button></div>
-    </div>}
-    {tokens.length > 0 && <div className="account-list" data-testid="token-list">{tokens.map(token => <article className="account-row agent-token-row" data-testid="token-row" key={token.id}>
-      <div className="account-description"><h3>{token.name}</h3>
-        <p>{token.scopes.map(scope => scopeLabels[scope] ?? scope).join(' · ')}</p>
-        <small>{token.last_used_at ? `Last used ${new Date(token.last_used_at * 1000).toLocaleString()}` : 'Never used'}</small></div>
-      <button type="button" className="button small danger" data-testid="token-revoke" disabled={busy} onClick={() => revoke(token)}>Revoke</button>
-    </article>)}</div>}
-    <form className="agent-token-form" data-testid="token-form" onSubmit={create}>
-      <label>Token name<input data-testid="token-name" value={name} maxLength={80} required onChange={e => setName(e.target.value)} /></label>
-      <fieldset className="automation-days"><legend>Scopes</legend>{(status?.scopes ?? Object.keys(scopeLabels)).map(scope => <label key={scope}>
-        <input type="checkbox" data-testid={`token-scope-${scope}`} checked={scopes.includes(scope)}
-          onChange={e => setScopes(e.target.checked ? [...scopes, scope] : scopes.filter(item => item !== scope))} />{scopeLabels[scope] ?? scope}</label>)}</fieldset>
-      <button className="button primary" data-testid="token-create" disabled={busy || !name.trim() || scopes.length === 0}>Create token</button>
-    </form>
+  const mcpUrl = status?.mcp_url
+  return <section id="agents" className="settings-section flush" data-testid="agent-access" aria-labelledby="agent-access-title">
+    <div className="card-header">
+      <div><h2 id="agent-access-title">Agent access</h2><p className="subtle">MCP access tokens. Shown once on creation.</p></div>
+    </div>
+    <div className="section-body form-stack">
+      {mcpUrl && <label>MCP endpoint
+        <span className="copy-field"><input readOnly value={mcpUrl} data-testid="mcp-url" onFocus={e => e.currentTarget.select()} />
+          <button type="button" className="button" data-testid="mcp-url-copy" onClick={() => void copy(mcpUrl, 'url')}>{copied === 'url' ? 'Copied' : 'Copy'}</button></span>
+      </label>}
+      {error && <p className="alert error" role="alert">{error}</p>}
+      {created && <div className="alert notice form-stack" data-testid="token-created" role="status">
+        <p>Copy this token now. It will not be shown again.</p>
+        <span className="copy-field"><input readOnly value={created} aria-label="New access token" data-testid="token-value" onFocus={e => e.currentTarget.select()} />
+          <button type="button" className="button" data-testid="token-copy" onClick={() => void copy(created, 'token')}>{copied === 'token' ? 'Copied' : 'Copy'}</button></span>
+      </div>}
+    </div>
+    {tokens.length > 0 && <div className="table-wrap"><table className="table" data-testid="token-list">
+      <thead><tr><th scope="col">Name</th><th scope="col">Scopes</th><th scope="col">Last used</th><th scope="col"><span className="visually-hidden">Actions</span></th></tr></thead>
+      <tbody>{tokens.map(token => <tr data-testid="token-row" key={token.id}>
+        <td><strong>{token.name}</strong></td>
+        <td><span className="scope-list">{token.scopes.map(scope => <span key={scope}>{scopeLabels[scope] ?? scope}</span>)}</span></td>
+        <td title={token.last_used_at ? new Date(token.last_used_at * 1000).toLocaleString() : undefined}>{token.last_used_at ? ago(token.last_used_at) : 'Never used'}</td>
+        <td className="actions-cell"><button type="button" className="button small ghost danger" data-testid="token-revoke" disabled={busy} onClick={() => revoke(token)}>Revoke</button></td>
+      </tr>)}</tbody>
+    </table></div>}
+    <div className="section-body">
+      <form className="token-form" data-testid="token-form" onSubmit={create}>
+        <h3>Create token</h3>
+        <label>Token name<input data-testid="token-name" value={name} maxLength={80} required onChange={e => setName(e.target.value)} placeholder="e.g. Claude Code · laptop" /></label>
+        <fieldset className="check-group"><legend>Scopes</legend>{(status?.scopes ?? Object.keys(scopeLabels)).map(scope => <label className="check-row" key={scope}>
+          <input type="checkbox" data-testid={`token-scope-${scope}`} checked={scopes.includes(scope)}
+            onChange={e => setScopes(e.target.checked ? [...scopes, scope] : scopes.filter(item => item !== scope))} />{scopeLabels[scope] ?? scope}</label>)}</fieldset>
+        <button className="button primary" data-testid="token-create" disabled={busy || !name.trim() || scopes.length === 0}>Create token</button>
+      </form>
+    </div>
   </section>
 }

@@ -20,6 +20,10 @@ export function countryOptions(current = 'US') {
     .sort((a, b) => a.label.localeCompare(b.label, 'en'))
 }
 
+export function countryName(code: string) {
+  return countryNames.of(code) ?? code
+}
+
 export const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
 export function timeZoneOptions(current = localTimeZone) {

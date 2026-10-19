@@ -62,6 +62,6 @@ For outdoor AQI, get an [AQICN token](https://aqicn.org/data-platform/token/) an
 
 Local administrator login uses `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH`. Google login needs `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_ALLOWED_EMAILS`. Register `APP_URL` as the OAuth JavaScript origin and `APP_URL/auth/google/callback` as the redirect URI. Approved users share one household; there is no public registration. [Deployment and OAuth details](docs/DEPLOYMENT.md#authentication-and-operations).
 
-For the rule planner, set `OPENROUTER_API_KEY` locally, or rely on Gemini through Agent Platform on GCP. Mark a device *Agent-managed* in its rule editor. To connect an external agent, create an access token under **Accounts → Agent access** and add `APP_URL/mcp` as an HTTP MCP server. [Agent setup](docs/AGENT.md).
+For the rule planner, set `OPENROUTER_API_KEY` locally, or rely on Gemini through Agent Platform on GCP. Set a device to **Auto** on its page, or use **Turn on Auto** on Home. To connect an external agent, create an access token under **Settings → Agent access** and add `APP_URL/mcp` as an HTTP MCP server. [Agent setup](docs/AGENT.md).
 
 Licensed under [AGPL-3.0-or-later](LICENSE).

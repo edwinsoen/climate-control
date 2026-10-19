@@ -46,17 +46,19 @@ const METRIC_LABELS: Record<ChartMetric, string> = {
   humidity: 'Humidity',
 }
 
-export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, metric = 'pm25', historyPath, unit = 'µg/m³', metricSelector }: {
+export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, metric = 'pm25', historyPath, unit = 'µg/m³', metricSelector, collapsible = true, title = 'History', subtitle }: {
   deviceId: string; name: string; capabilities: string[]; fetchHistory: FetchHistory
   metric?: ChartMetric; historyPath?: string; unit?: string
   metricSelector?: ReactNode
+  collapsible?: boolean; title?: string; subtitle?: string
 }) {
   const [hours, setHours] = useState(24)
   const [history, setHistory] = useState<History | null>(null)
   const [error, setError] = useState('')
   const [active, setActive] = useState<number | null>(null)
   const [activeTime, setActiveTime] = useState<number | null>(null)
-  const [expanded, setExpanded] = useState(false)
+  const [open, setExpanded] = useState(false)
+  const expanded = open || !collapsible
   const [width, setWidth] = useState(320)
   const content = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -155,20 +157,25 @@ export function AirQualityChart({ deviceId, name, capabilities, fetchHistory, me
     setActive(nearest)
   }
 
-  return <section className="air-history" aria-labelledby={titleId}>
-    <div className="history-header">
-      <span id={titleId} data-testid="history-title">History</span>
+  const controls = <div className="history-controls" data-testid="history-controls">
+    {metricSelector}
+    <div className="history-periods" data-testid="history-periods" role="group" aria-label={`History period for ${name}`}>
+      {[[24, '24h'], [168, '7d'], [720, '30d']].map(([period, label]) => <button key={period} type="button"
+        data-testid={`history-period-${label}`} aria-pressed={hours === period} onClick={() => { setHours(Number(period)); setActive(null) }}>{label}</button>)}
+    </div>
+  </div>
+
+  return <section className={collapsible ? 'air-history collapsible' : 'air-history'} aria-labelledby={titleId}>
+    {collapsible ? <div className="history-header">
+      <span id={titleId} data-testid="history-title">{title}</span>
       <button type="button" className="history-toggle" data-testid="history-toggle" aria-label={`${historyLabel} history for ${name}`} aria-expanded={expanded}
         aria-controls={contentId} onClick={() => { setExpanded(!expanded); setActive(null) }}><span aria-hidden="true" /></button>
-    </div>
-    <div id={contentId} ref={content} hidden={!expanded}>
-    {expanded && <div className="history-controls" data-testid="history-controls">
-      {metricSelector}
-      <div className="history-periods" data-testid="history-periods" role="group" aria-label={`History period for ${name}`}>
-        {[[24, '24h'], [168, '7d'], [720, '30d']].map(([period, label]) => <button key={period} type="button"
-          data-testid={`history-period-${label}`} aria-pressed={hours === period} onClick={() => { setHours(Number(period)); setActive(null) }}>{label}</button>)}
-      </div>
+    </div> : <div className="card-header">
+      <div><h2 id={titleId} data-testid="history-title">{title}</h2>{subtitle && <span className="hint">{subtitle}</span>}</div>
+      {controls}
     </div>}
+    <div id={contentId} ref={content} hidden={!expanded}>
+    {expanded && collapsible && controls}
     {expanded && <>
       {!hasSensor && <p className="history-note" data-testid="history-unavailable">{metricLabel} readings unavailable.</p>}
       {canFetchHistory && <>
