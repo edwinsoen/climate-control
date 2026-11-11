@@ -10,7 +10,18 @@ Each device page has an automation mode control. **Auto** is agent ownership wit
 
 Home turns on Auto for every purifier when none is automated, and pauses or resumes automation on all automated purifiers. It lists today's commands, overrides, failures, and planner revisions from each device's events.
 
-Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration ("Changes override Auto for") or pause/resume explicitly. Changes made outside the app do not automatically pause rules.
+Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration ("Changes override Auto for") or pause/resume explicitly.
+
+Power, mode, or fan changes made outside the app, on the device or in the provider's app, pause automation for the same duration and never shorten a longer pause. This includes schedules and timers set in the VeSync or Mi Home app, which pause automation each time they change a setting. The pause event records `actor: "external"` with the previous and observed settings.
+
+The poller compares consecutive fresh online observations. A change is the app's when a power, mode, or fan command dispatched in the last 10 minutes explains it. The following do not pause automation:
+
+- A failed command, which changes nothing.
+- A delayed acknowledgment that appears on a later poll.
+- Commands sent within 90 seconds of each other, such as level 3 then level 4, form one change, and the late arrival of any of them is the app's. While the newest is under 90 seconds old, the change also excuses a switch to manual before a fan command's new level, and a return to the setting a command replaced unless that return undoes a confirmed command. A command is confirmed once its full setting is seen on a fresh reading; undoing it is a person reverting it and pauses automation. Older commands excuse only an exact match.
+- A confirmed setting that reappears within 90 seconds of its confirmation.
+- Running speed in built-in Auto, and settings reported while off.
+- Changes across a poll that found the device offline, or across a freshness gap. A restart between two polls that both find the device online is still compared.
 
 ## Rule format, version 1
 

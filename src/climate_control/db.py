@@ -69,6 +69,8 @@ class Device(Base):
     warning_threshold: Mapped[str | None] = mapped_column(String(30), nullable=True)
     retrieved_at: Mapped[float | None] = mapped_column(nullable=True)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Recent app setting commands; see climate_control.overrides.
+    control_intents: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
 
 
 class DisplayConfiguration(Base):

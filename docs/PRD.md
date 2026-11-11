@@ -6,7 +6,7 @@ Climate Control helps a private household monitor air quality and indoor environ
 
 - Connect VeSync and Xiaomi Home (international cloud) accounts, discover purifiers, and control supported power, fan, and display settings. Show fresh, stale, unavailable, and failed states without inventing measurements.
 - Record up to 30 days of paired purifier readings (PM2.5, PM1, PM10, qualitative air quality, indoor temperature, and relative humidity) and observed settings. Optionally select an AQICN station and collect outdoor AQI and pollutant indices; station history begins when selected.
-- Edit per-device rules for schedules, readings, missing inputs, and actions. The deterministic worker evaluates rules independently of browser traffic. Manual controls pause automation; capability checks, pacing, persistence, and cooldowns guard changes.
+- Edit per-device rules for schedules, readings, missing inputs, and actions. The deterministic worker evaluates rules independently of browser traffic. Manual controls, including changes made on the device or in the provider app, pause automation; capability checks, pacing, persistence, and cooldowns guard changes.
 - Choose manual or agent ownership. A built-in ADK planner using Gemini on Agent Platform or OpenRouter maintains agent-managed devices' rules, running in-app or on Agent Runtime. External agents use the same device, outdoor, and rule tools over MCP with scoped tokens. The app validates proposals and retains the last valid ruleset when planning fails.
 - Run locally with SQLite and a combined service, or deploy the UI to Firebase Hosting and the API, which also runs the minute tick, to Cloud Run using an external PostgreSQL database.
 

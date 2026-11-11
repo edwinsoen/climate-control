@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, select, update
 
+from climate_control.automation import lock_automation, pause_for_override
 from climate_control.config import WorkerSettings
 from climate_control.db import Account, Automation, Device
 from climate_control.display import (
@@ -16,6 +17,7 @@ from climate_control.display import (
     should_display_warning,
 )
 from climate_control.history import prune_readings, record_reading
+from climate_control.overrides import outside_change, recent, record_intent, settle_intents
 from climate_control.providers.base import DeviceCommand, DeviceProvider, PollResult, ProviderError
 from climate_control.security import Vault
 
@@ -219,6 +221,11 @@ class Poller:
                 if claimed and guard is not None and not guard(db, device, current):
                     db.rollback()
                     return RefreshResult("superseded")
+                if claimed and command is not None:
+                    # Recorded before dispatch, so a late acknowledgment is still the app's.
+                    device.control_intents = record_intent(
+                        recent(device.control_intents, current), command, current, device.state
+                    )
                 db.commit()
                 account = db.get(Account, device.account_id)
                 if not account:
@@ -362,6 +369,14 @@ class Poller:
                     device = Device(account_id=account.id, provider_id=snapshot.provider_id)
                     db.add(device)
                 prev_retrieved_at = device.retrieved_at
+                previous = device.state or {}
+                # Only consecutive fresh online observations reveal a change made outside
+                # the app; offline periods and gaps may hide restarts and are not compared.
+                comparable = (
+                    prev_retrieved_at is not None
+                    and device.error is None
+                    and previous.get("connectivity") == "online"
+                )
                 device.name = snapshot.name
                 device.model = snapshot.model
                 device.supported = snapshot.supported
@@ -392,6 +407,16 @@ class Poller:
                     and (prev_retrieved_at is None or snapshot.retrieved_at >= prev_retrieved_at)
                 )
                 if fresh_reading:
+                    intents = recent(device.control_intents, current)
+                    if comparable and snapshot.retrieved_at - prev_retrieved_at <= max(
+                        self.settings.stale_after_seconds,
+                        self.settings.poll_interval_seconds * 3,
+                    ):
+                        change = outside_change(previous, device.state, intents, current)
+                        if change:
+                            state = lock_automation(db, device.id)
+                            pause_for_override(db, state, current, "external", **change)
+                    device.control_intents = settle_intents(intents, device.state, current)
                     observed_display = device.state.get("display")
                     if reset_display_mode == snapshot.provider_id:
                         device.display_mode = "manual"
