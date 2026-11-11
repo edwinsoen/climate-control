@@ -149,5 +149,6 @@ terraform -chdir=infra/gcp/runtime test
 - `0009` adds automation and planning records. Existing and new devices start with automation disabled. See [automation](AUTOMATION.md).
 - `0010` adds MCP access tokens, planner run records, and revision authors. Existing revisions have no author. Rerun the bootstrap (through `invoke deploy`) to create the planner identities, roles, and agent secrets.
 - `0013` adds Xiaomi Home account support (`(provider, email, country_code)` account uniqueness and 3-state display warning modes) plus indoor `temperature` and `humidity` columns in `device_readings`.
+- `0014` adds `devices.control_intents`, recent app setting commands used to tell them apart from changes made outside the app.
 
 Local source upgrades require stopping the backend, backing up SQLite and its encryption key, running `uv run python -m climate_control.cli migrate`, then restarting. Compose handles migration on startup; GCP `invoke deploy` runs the migration Job before switching the API. The backend does not reload automatically.

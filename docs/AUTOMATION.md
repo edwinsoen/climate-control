@@ -10,7 +10,9 @@ Each device page has an automation mode control. **Auto** is agent ownership wit
 
 Home turns on Auto for every purifier when none is automated, and pauses or resumes automation on all automated purifiers. It lists today's commands, overrides, failures, and planner revisions from each device's events.
 
-Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration ("Changes override Auto for") or pause/resume explicitly. Changes made outside the app do not automatically pause rules.
+Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration ("Changes override Auto for") or pause/resume explicitly.
+
+Power, mode, or fan changes made outside the app, on the device or in the provider's app, pause automation for the same duration. They never shorten a longer pause. The poller records every power, mode, and fan command the app dispatches as an intent before provider I/O and keeps it for 10 minutes. A change between two consecutive fresh online observations is attributed to the app when a recent intent matches the new setting: a power intent explains a power change, and a mode or fan intent explains a mode or level change. Any other change is an outside override. A failed command changes nothing, and a delayed acknowledgment that appears on a later poll still matches its intent, so neither pauses automation. Only configured power, mode, and manual fan level are compared, not the running speed in built-in Auto or settings while off. Changes across offline periods or freshness gaps are not compared, so a purifier that restarts after an outage does not pause automation. The pause event records `actor: "external"` with the previous and observed settings.
 
 ## Rule format, version 1
 

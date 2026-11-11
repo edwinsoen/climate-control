@@ -26,6 +26,43 @@ from climate_control.rules import Ruleset, evaluate
 LEASE_SECONDS = 300
 
 
+def pause_for_override(db, device_id, current, actor, **details):
+    """Pause enabled automation for its configured period after a manual setting change.
+
+    The caller holds the account row lock, so dispatch guards observe the pause.
+    """
+    db.execute(
+        update(Automation)
+        .where(Automation.device_id == device_id)
+        .values(generation=Automation.generation)
+    )
+    state = db.get(Automation, device_id, populate_existing=True)
+    if state is None or not state.enabled:
+        return
+    until = current + state.pause_seconds
+    # A change made outside the app never shortens an explicit longer pause.
+    state.paused_until = until if actor != "external" else max(state.paused_until, until)
+    state.generation += 1
+    state.lease_token, state.lease_until = None, 0
+    # Keep agent proposals valid only if they use the new planning generation.
+    job = db.get(PlanningJob, device_id)
+    if job and job.status in {"pending", "claimed"}:
+        job.generation = state.generation
+        job.status, job.lease_token, job.lease_until = "pending", None, 0
+    db.add(
+        AutomationEvent(
+            device_id=device_id,
+            revision=state.revision,
+            details={
+                "inhibition": "manual_pause",
+                "paused_until": state.paused_until,
+                "actor": actor,
+                **details,
+            },
+        )
+    )
+
+
 def current_rules(db, state):
     row = db.scalar(
         select(RuleRevision).where(

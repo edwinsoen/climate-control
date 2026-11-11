@@ -12,7 +12,7 @@ export type AutomationSummary = { owner: 'manual' | 'agent'; enabled: boolean; p
 export type Step = { at: number; kind: string; name?: string; text?: string; arguments?: string; error?: string }
 export type Run = { id: string; status: string; model: string; attempts: number; llm_calls: number; error_kind: string | null; started_at: number; finished_at: number | null; step_count?: number; steps?: Step[] }
 export type AutomationState = AutomationSummary & { generation: number; revision: number; pause_seconds: number; timezone: string; ruleset: Ruleset | null; job: { status: string; reasons: { reason: string }[] } | null; run: Run | null }
-export type AutomationEvent = { id: number; created_at: number; revision?: number; outcome?: string; inhibition?: string; planning?: string; intent?: unknown; paused_until?: number; decision?: { explanation: string; action?: Action } }
+export type AutomationEvent = { id: number; created_at: number; revision?: number; outcome?: string; inhibition?: string; actor?: string; planning?: string; intent?: unknown; paused_until?: number; decision?: { explanation: string; action?: Action } }
 export type Mode = 'auto' | 'custom' | 'off'
 
 export const metricLabels: Record<string, string> = { pm25: 'PM2.5 (µg/m³)', pm1: 'PM1 (µg/m³)', pm10: 'PM10 (µg/m³)', air_quality: 'Air quality (rank 1–4)', temperature: 'Temperature (°C)', humidity: 'Humidity (%)', aqi: 'Overall AQI', pm25_aqi: 'PM2.5 AQI', pm10_aqi: 'PM10 AQI' }
@@ -42,7 +42,7 @@ export function runText(run: Run) {
 export function eventText(event: AutomationEvent) {
   if (event.planning) return planningLabels[event.planning] ?? 'Auto planning'
   if (event.intent && event.decision?.action) return 'Set to ' + actionText(event.decision.action)
-  if (event.inhibition === 'manual_pause') return 'Overridden'
+  if (event.inhibition === 'manual_pause') return event.actor === 'external' ? 'Changed outside the app' : 'Overridden'
   if (event.outcome) return outcomeLabels[event.outcome] ?? 'Setting update'
   if (event.decision?.explanation) return event.decision.explanation
   return event.inhibition ? inhibitionLabels[event.inhibition] ?? 'Automation update' : 'Setting requested'

@@ -13,6 +13,7 @@ from climate_control.automation import (
     collect_inputs,
     current_rules,
     fresh_device,
+    pause_for_override,
     request_review,
     validate_capabilities,
 )
@@ -162,27 +163,8 @@ def invalidate(db, state):
 
 
 def pause_for_manual(db, device_id, actor="user"):
-    _, state = get_state(db, device_id, lock=True)
-    if state.enabled:
-        state.paused_until = time.time() + state.pause_seconds
-        state.generation += 1
-        state.lease_token, state.lease_until = None, 0
-        # Keep agent proposals valid only if they use the new planning generation.
-        job = db.get(PlanningJob, device_id)
-        if job and job.status in {"pending", "claimed"}:
-            job.generation = state.generation
-            job.status, job.lease_token, job.lease_until = "pending", None, 0
-        db.add(
-            AutomationEvent(
-                device_id=device_id,
-                revision=state.revision,
-                details={
-                    "inhibition": "manual_pause",
-                    "paused_until": state.paused_until,
-                    "actor": actor,
-                },
-            )
-        )
+    get_state(db, device_id, lock=True)  # Creates the row for older devices.
+    pause_for_override(db, device_id, time.time(), actor)
 
 
 class Version(StrictModel):

@@ -10,6 +10,8 @@ from sqlalchemy import delete
 
 from climate_control.automation import collect_inputs, reconsider
 from climate_control.db import Account, Automation, Device, DeviceReading, PlanningJob
+from climate_control.overrides import INTENT_SECONDS, outside_change
+from climate_control.providers.base import ProviderError
 from climate_control.rules import Ruleset, evaluate
 
 
@@ -550,3 +552,132 @@ async def test_context_is_cached_and_rules_survive_missing_reference(
     await signed_client.delete(f"/api/accounts/{other_account['id']}")
     await app.state.poller.automation.tick()
     assert app.state.poller.provider.control_calls[-1][-1].fan_level == 3
+
+
+def override_events(events):
+    return [e for e in events if e.get("inhibition") == "manual_pause"]
+
+
+async def test_outside_change_pauses_for_configured_period(app, signed_client, controlled_device):
+    path = await setup_rules(signed_client, controlled_device)
+    provider = app.state.poller.provider
+    await app.state.poller.automation.tick()
+    assert provider.control_calls[-1][-1].fan_level == 3
+    # Someone lowers the fan on the device or in the native app.
+    provider.states["home@example.com"]["fan_level"] = 1
+    clear_spacing(app, controlled_device)
+    await app.state.poller.control(controlled_device["id"], None)
+    state = (await signed_client.get(path)).json()
+    assert 3590 < state["paused_until"] - time.time() <= 3600
+    [event] = override_events((await signed_client.get(path + "/events")).json())
+    assert event["actor"] == "external"
+    assert (event["previous"]["fan_level"], event["observed"]["fan_level"]) == (3, 1)
+    clear_spacing(app, controlled_device)
+    await app.state.poller.automation.tick()
+    assert len(provider.control_calls) == 1
+
+
+def stale_readback(provider):
+    result = provider.snapshot({"label": "Home", "email": "home@example.com"})
+    result.control_confirmed = False
+    provider.control_results.append(result)
+
+
+async def read_status(app, device):
+    clear_spacing(app, device)
+    await app.state.poller.control(device["id"], None)
+
+
+async def test_delayed_acknowledgment_is_not_an_outside_change(
+    app, signed_client, controlled_device
+):
+    path = await setup_rules(signed_client, controlled_device)
+    provider = app.state.poller.provider
+    stale_readback(provider)
+    await app.state.poller.automation.tick()
+    # The device applies level 3 after the readback still showed level 2.
+    provider.states["home@example.com"] = {"fan_level": 3}
+    await read_status(app, controlled_device)
+    assert (await signed_client.get(path)).json()["paused_until"] == 0
+    assert not override_events((await signed_client.get(path + "/events")).json())
+    await app.state.poller.automation.tick()
+    summary = (await signed_client.get(path)).json()["summary"]
+    assert summary["inhibition"] == "already_applied"
+
+
+async def test_manual_control_with_late_readback_is_one_user_override(
+    app, signed_client, controlled_device
+):
+    path = await setup_rules(signed_client, controlled_device)
+    provider = app.state.poller.provider
+    stale_readback(provider)
+    response = await signed_client.post(
+        f"/api/devices/{controlled_device['id']}/control", json={"fan_level": 4}
+    )
+    assert response.status_code == 200
+    provider.states["home@example.com"] = {"fan_level": 4}
+    await read_status(app, controlled_device)
+    events = override_events((await signed_client.get(path + "/events")).json())
+    assert [event["actor"] for event in events] == ["user"]
+
+
+async def test_failed_command_does_not_hide_a_later_outside_change(
+    app, signed_client, controlled_device
+):
+    path = await setup_rules(signed_client, controlled_device)
+    provider = app.state.poller.provider
+    provider.control_results.append(ProviderError("control_failed"))
+    await app.state.poller.automation.tick()
+    await read_status(app, controlled_device)
+    assert (await signed_client.get(path)).json()["paused_until"] == 0
+    provider.states["home@example.com"] = {"power": "off"}
+    await read_status(app, controlled_device)
+    assert (await signed_client.get(path)).json()["paused_until"] > time.time()
+
+
+async def test_changes_across_offline_periods_do_not_pause(app, signed_client, controlled_device):
+    path = await setup_rules(signed_client, controlled_device, {
+        **rule_document(controlled_device["id"]), "fallback": {"power": "hold"}, "rules": []
+    })
+    provider = app.state.poller.provider
+    provider.states["home@example.com"] = {"connectivity": "offline"}
+    await app.state.poller.control(controlled_device["id"], None)
+    provider.states["home@example.com"] = {"fan_level": 4}
+    clear_spacing(app, controlled_device)
+    await app.state.poller.control(controlled_device["id"], None)
+    assert (await signed_client.get(path)).json()["paused_until"] == 0
+
+
+ON2 = {"power": "on", "mode": "manual", "fan_level": 2}
+
+
+@pytest.mark.parametrize(
+    "previous,observed,intents,outside",
+    [
+        (ON2, {**ON2, "fan_level": 3}, [{"fan_level": 3}], False),
+        (ON2, {**ON2, "fan_level": 3}, [{"fan_level": 4}], True),
+        (ON2, {**ON2, "power": "off"}, [{"fan_level": 2}], True),
+        (ON2, {**ON2, "power": "off"}, [{"power": False}], False),
+        ({**ON2, "power": "off"}, {**ON2, "mode": "auto"}, [{"power": True}], False),
+        # Built-in Auto varies the reported level by itself.
+        ({**ON2, "mode": "auto"}, {**ON2, "mode": "auto", "fan_level": 4}, [], False),
+        ({**ON2, "power": "off"}, {**ON2, "power": "off", "fan_level": 1}, [], False),
+        (ON2, {**ON2, "mode": "sleep"}, [{"mode": "sleep"}], False),
+        (ON2, {**ON2, "power": "unknown"}, [], False),
+    ],
+)
+def test_outside_change_attribution(previous, observed, intents, outside):
+    now = time.time()
+    recent = [{**intent, "at": now - 1} for intent in intents]
+    assert bool(outside_change(previous, observed, recent, now)) is outside
+
+
+async def test_expired_intent_does_not_explain_a_change(app, signed_client, controlled_device):
+    path = await setup_rules(signed_client, controlled_device)
+    with app.state.sessions() as db:
+        device = db.get(Device, controlled_device["id"])
+        device.control_intents = [{"fan_level": 3, "at": time.time() - INTENT_SECONDS - 1}]
+        db.commit()
+    app.state.poller.provider.states["home@example.com"] = {"fan_level": 3}
+    await read_status(app, controlled_device)
+    assert (await signed_client.get(path)).json()["paused_until"] > time.time()
