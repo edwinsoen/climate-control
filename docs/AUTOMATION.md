@@ -18,7 +18,8 @@ The poller compares consecutive fresh online observations. A change is the app's
 
 - A failed command, which changes nothing.
 - A delayed acknowledgment that appears on a later poll, or a fan command observed as a switch to manual before its new level.
-- A confirmed setting that reappears within 90 seconds after the provider briefly served an older reading. The step back to the older reading still counts as an outside change, because it looks the same as a person reverting the setting.
+- A return to the setting a command replaced while that command is unconfirmed, meaning its full setting has not been seen on a fresh reading. Once confirmed, a step back is a person reverting it and pauses automation.
+- A confirmed setting that reappears within 90 seconds of its confirmation.
 - Running speed in built-in Auto, and settings reported while off.
 - Changes across a poll that found the device offline, or across a freshness gap. A restart between two polls that both find the device online is still compared.
 

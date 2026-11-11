@@ -224,7 +224,7 @@ class Poller:
                 if claimed and command is not None:
                     # Recorded before dispatch, so a late acknowledgment is still the app's.
                     device.control_intents = record_intent(
-                        recent(device.control_intents, current), command, current
+                        recent(device.control_intents, current), command, current, device.state
                     )
                 db.commit()
                 account = db.get(Account, device.account_id)

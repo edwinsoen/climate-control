@@ -14,6 +14,7 @@ from climate_control.overrides import (
     CONFIRM_SECONDS,
     INTENT_SECONDS,
     outside_change,
+    settings_of,
     settle_intents,
 )
 from climate_control.providers.base import ProviderError
@@ -675,6 +676,7 @@ ON2 = {"power": "on", "mode": "manual", "fan_level": 2}
     ],
 )
 def test_outside_change_attribution(previous, observed, intents, outside):
+    intents = [{**intent, "from": settings_of(previous)} for intent in intents]
     assert bool(outside_change(previous, observed, intents)) is outside
 
 
@@ -689,12 +691,19 @@ async def test_expired_intent_does_not_explain_a_change(app, signed_client, cont
     assert (await signed_client.get(path)).json()["paused_until"] > time.time()
 
 
-def test_confirmed_intent_explains_a_briefly_older_reading():
+def test_step_back_is_manual_only_after_confirmation():
     now = time.time()
-    intents = settle_intents([{"fan_level": 3, "at": now}], {**ON2, "fan_level": 3}, now)
-    # A provider serves the old level once, then the confirmed level again.
-    intents = settle_intents(intents, ON2, now + 60)
-    assert not outside_change(ON2, {**ON2, "fan_level": 3}, intents)
+    auto = {**ON2, "mode": "auto", "fan_level": 5}
+    half = {**auto, "mode": "manual"}
+    intents = [{"fan_level": 3, "at": now, "from": settings_of(auto)}]
+    # Seen as a switch to manual at the old level, then rolled back: not confirmed.
+    intents = settle_intents(intents, half, now)
+    assert not outside_change(half, auto, intents)
+    # Confirmed, then reverted by a person.
+    intents = settle_intents(intents, {**ON2, "fan_level": 3}, now)
+    assert outside_change({**ON2, "fan_level": 3}, auto, intents)
+    # The confirmed setting reappearing within the window is still the app's.
+    assert not outside_change(auto, {**ON2, "fan_level": 3}, intents)
     assert not settle_intents(intents, {**ON2, "fan_level": 3}, now + CONFIRM_SECONDS + 1)
 
 

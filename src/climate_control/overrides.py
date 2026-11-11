@@ -6,8 +6,8 @@ that no recent intent explains was made on the device or in another app.
 """
 
 INTENT_SECONDS = 600
-# Matches the rule engine's confirmation window. A confirmed intent still explains the
-# setting reappearing if a provider briefly serves an older reading.
+# Matches the rule engine's confirmation window. A confirmed intent still explains its
+# setting reappearing within this window.
 CONFIRM_SECONDS = 90
 
 
@@ -25,10 +25,21 @@ def recent(intents: list, current: float) -> list:
     return [item for item in intents if item["at"] > current - INTENT_SECONDS]
 
 
-def record_intent(intents: list, command, current: float) -> list:
+def record_intent(intents: list, command, current: float, state: dict) -> list:
+    """Add a dispatched setting command with the setting it replaces."""
     values = {key: getattr(command, key) for key in ("power", "mode", "fan_level")}
     intent = {key: value for key, value in values.items() if value is not None}
-    return [*intents, {**intent, "at": current}] if intent else intents
+    if not intent:
+        return intents
+    return [*intents, {**intent, "at": current, "from": settings_of(state)}]
+
+
+def _same(a: dict, b: dict) -> bool:
+    if a["power"] != b["power"] or a["power"] is None:
+        return False
+    if a["power"] == "off":
+        return True
+    return a["mode"] == b["mode"] and (a["mode"] != "manual" or a["fan_level"] == b["fan_level"])
 
 
 def _applied(intent: dict, observed: dict) -> bool:
@@ -45,6 +56,10 @@ def outside_change(previous: dict, observed: dict, intents: list) -> dict | None
     """The settings change between two fresh observations that no recent app intent explains."""
     before, after = settings_of(previous), settings_of(observed)
     if before["power"] is None or after["power"] is None:
+        return None
+    # A command never observed fully applied may fail or roll back to the setting it
+    # replaced. Once confirmed, a step back to that setting is a person reverting it.
+    if any("applied_at" not in item and _same(item["from"], after) for item in intents):
         return None
     if before["power"] != after["power"]:
         # Power commands also carry whatever mode and level the device resumes with.
