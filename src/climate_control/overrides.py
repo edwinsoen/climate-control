@@ -52,14 +52,25 @@ def _applied(intent: dict, observed: dict) -> bool:
     return observed["mode"] == "manual" and observed["fan_level"] == intent["fan_level"]
 
 
-def outside_change(previous: dict, observed: dict, intents: list) -> dict | None:
-    """The settings change between two fresh observations that no recent app intent explains."""
+def outside_change(previous: dict, observed: dict, intents: list, current: float) -> dict | None:
+    """The settings change between two fresh observations that no recent app intent explains.
+
+    An exact match explains a change for the intent's lifetime. Partial and rollback
+    observations are excused only for the newest command, unconfirmed and within the
+    confirmation window, so a command that never confirms cannot hide a later change.
+    """
     before, after = settings_of(previous), settings_of(observed)
     if before["power"] is None or after["power"] is None:
         return None
-    # A command never observed fully applied may fail or roll back to the setting it
-    # replaced. Once confirmed, a step back to that setting is a person reverting it.
-    if any("applied_at" not in item and _same(item["from"], after) for item in intents):
+    newest = intents[-1] if intents else None
+    settling = (
+        newest
+        if newest and "applied_at" not in newest and newest["at"] > current - CONFIRM_SECONDS
+        else None
+    )
+    # An unconfirmed command may fail or roll back to the setting it replaced. Once
+    # confirmed, a step back to that setting is a person reverting it.
+    if settling and _same(settling["from"], after):
         return None
     if before["power"] != after["power"]:
         # Power commands also carry whatever mode and level the device resumes with.
@@ -77,14 +88,12 @@ def outside_change(previous: dict, observed: dict, intents: list) -> dict | None
         )
         if not (mode_changed or level_changed):
             return None
-        explained = any(
-            "power" not in item
-            and (
-                _applied(item, after)
-                # Providers may report the switch to manual before the new level.
-                or ("fan_level" in item and mode_changed and after["mode"] == "manual")
-            )
-            for item in intents
+        explained = any("power" not in item and _applied(item, after) for item in intents) or (
+            # Providers may report the switch to manual before the new level.
+            settling is not None
+            and "fan_level" in settling
+            and mode_changed
+            and after["mode"] == "manual"
         )
     return None if explained else {"previous": before, "observed": after}
 

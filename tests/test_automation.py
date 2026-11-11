@@ -676,8 +676,9 @@ ON2 = {"power": "on", "mode": "manual", "fan_level": 2}
     ],
 )
 def test_outside_change_attribution(previous, observed, intents, outside):
-    intents = [{**intent, "from": settings_of(previous)} for intent in intents]
-    assert bool(outside_change(previous, observed, intents)) is outside
+    now = time.time()
+    intents = [{**intent, "at": now, "from": settings_of(previous)} for intent in intents]
+    assert bool(outside_change(previous, observed, intents, now)) is outside
 
 
 async def test_expired_intent_does_not_explain_a_change(app, signed_client, controlled_device):
@@ -698,13 +699,30 @@ def test_step_back_is_manual_only_after_confirmation():
     intents = [{"fan_level": 3, "at": now, "from": settings_of(auto)}]
     # Seen as a switch to manual at the old level, then rolled back: not confirmed.
     intents = settle_intents(intents, half, now)
-    assert not outside_change(half, auto, intents)
+    assert not outside_change(half, auto, intents, now)
     # Confirmed, then reverted by a person.
     intents = settle_intents(intents, {**ON2, "fan_level": 3}, now)
-    assert outside_change({**ON2, "fan_level": 3}, auto, intents)
+    assert outside_change({**ON2, "fan_level": 3}, auto, intents, now)
     # The confirmed setting reappearing within the window is still the app's.
-    assert not outside_change(auto, {**ON2, "fan_level": 3}, intents)
+    assert not outside_change(auto, {**ON2, "fan_level": 3}, intents, now)
     assert not settle_intents(intents, {**ON2, "fan_level": 3}, now + CONFIRM_SECONDS + 1)
+
+
+def test_unconfirmed_command_does_not_hide_later_outside_changes():
+    now = time.time()
+    auto = {**ON2, "mode": "auto", "fan_level": 5}
+    failed_fan = [{"fan_level": 3, "at": now, "from": settings_of(auto)}]
+    later = now + CONFIRM_SECONDS + 1
+    # A person switches to manual level 1 after a fan command failed.
+    assert outside_change(auto, {**ON2, "fan_level": 1}, failed_fan, later)
+    # A failed command's replaced setting is not excused once a newer command exists.
+    manual3 = {**ON2, "fan_level": 3}
+    intents = [
+        {"mode": "auto", "at": now, "from": settings_of(manual3)},
+        {"fan_level": 4, "at": now + 1, "from": settings_of(manual3)},
+    ]
+    intents = settle_intents(intents, {**ON2, "fan_level": 4}, now + 2)
+    assert outside_change({**ON2, "fan_level": 4}, manual3, intents, now + 3)
 
 
 async def test_outside_change_keeps_a_longer_pause(app, signed_client, controlled_device):

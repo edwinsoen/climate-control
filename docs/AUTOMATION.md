@@ -17,8 +17,8 @@ Power, mode, or fan changes made outside the app, on the device or in the provid
 The poller compares consecutive fresh online observations. A change is the app's when a power, mode, or fan command dispatched in the last 10 minutes explains it. The following do not pause automation:
 
 - A failed command, which changes nothing.
-- A delayed acknowledgment that appears on a later poll, or a fan command observed as a switch to manual before its new level.
-- A return to the setting a command replaced while that command is unconfirmed, meaning its full setting has not been seen on a fresh reading. Once confirmed, a step back is a person reverting it and pauses automation.
+- A delayed acknowledgment that appears on a later poll.
+- Within 90 seconds of the newest command, while it is unconfirmed (its full setting not yet seen on a fresh reading): a switch to manual before a fan command's new level, or a return to the setting the command replaced. Once confirmed, a step back is a person reverting it and pauses automation. Older or never-confirmed commands excuse only an exact match.
 - A confirmed setting that reappears within 90 seconds of its confirmation.
 - Running speed in built-in Auto, and settings reported while off.
 - Changes across a poll that found the device offline, or across a freshness gap. A restart between two polls that both find the device online is still compared.

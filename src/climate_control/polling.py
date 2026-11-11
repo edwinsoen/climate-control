@@ -412,7 +412,7 @@ class Poller:
                         self.settings.stale_after_seconds,
                         self.settings.poll_interval_seconds * 3,
                     ):
-                        change = outside_change(previous, device.state, intents)
+                        change = outside_change(previous, device.state, intents, current)
                         if change:
                             state = lock_automation(db, device.id)
                             pause_for_override(db, state, current, "external", **change)
