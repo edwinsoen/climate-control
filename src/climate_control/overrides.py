@@ -2,13 +2,13 @@
 
 Every power, mode, or fan command the app dispatches is recorded as an intent on the
 device before provider I/O. A change between two consecutive fresh online observations
-that no recent intent explains was made on the device or in another app. Intents stay
-valid for a bounded window, so a failed command (no change observed) or a delayed
-acknowledgment (the commanded setting appears on a later poll) is never mistaken for an
-outside change.
+that no recent intent explains was made on the device or in another app.
 """
 
 INTENT_SECONDS = 600
+# Matches the rule engine's confirmation window. A confirmed intent still explains the
+# setting reappearing if a provider briefly serves an older reading.
+CONFIRM_SECONDS = 90
 
 
 def settings_of(state: dict) -> dict:
@@ -21,18 +21,17 @@ def settings_of(state: dict) -> dict:
     }
 
 
-def setting_intent(command) -> dict | None:
+def recent(intents: list, current: float) -> list:
+    return [item for item in intents if item["at"] > current - INTENT_SECONDS]
+
+
+def record_intent(intents: list, command, current: float) -> list:
     values = {key: getattr(command, key) for key in ("power", "mode", "fan_level")}
-    return {k: v for k, v in values.items() if v is not None} or None
+    intent = {key: value for key, value in values.items() if value is not None}
+    return [*intents, {**intent, "at": current}] if intent else intents
 
 
-def record_intent(intents: list | None, command, current: float) -> list:
-    intent = setting_intent(command)
-    kept = [item for item in intents or [] if item["at"] > current - INTENT_SECONDS]
-    return [*kept[-15:], {**intent, "at": current}] if intent else kept
-
-
-def _matches(intent: dict, observed: dict) -> bool:
+def _applied(intent: dict, observed: dict) -> bool:
     if "power" in intent:
         return observed["power"] == ("on" if intent["power"] else "off")
     if observed["power"] != "on":
@@ -42,15 +41,14 @@ def _matches(intent: dict, observed: dict) -> bool:
     return observed["mode"] == "manual" and observed["fan_level"] == intent["fan_level"]
 
 
-def outside_change(previous: dict, observed: dict, intents: list, current: float) -> dict | None:
+def outside_change(previous: dict, observed: dict, intents: list) -> dict | None:
     """The settings change between two fresh observations that no recent app intent explains."""
     before, after = settings_of(previous), settings_of(observed)
-    intents = [item for item in intents if item["at"] > current - INTENT_SECONDS]
     if before["power"] is None or after["power"] is None:
         return None
     if before["power"] != after["power"]:
         # Power commands also carry whatever mode and level the device resumes with.
-        candidates = [item for item in intents if "power" in item]
+        explained = any("power" in item and _applied(item, after) for item in intents)
     elif after["power"] == "off":
         return None
     else:
@@ -64,17 +62,27 @@ def outside_change(previous: dict, observed: dict, intents: list, current: float
         )
         if not (mode_changed or level_changed):
             return None
-        candidates = [item for item in intents if "power" not in item]
-    if any(_matches(item, after) for item in candidates):
-        return None
-    return {"previous": before, "observed": after}
+        explained = any(
+            "power" not in item
+            and (
+                _applied(item, after)
+                # Providers may report the switch to manual before the new level.
+                or ("fan_level" in item and mode_changed and after["mode"] == "manual")
+            )
+            for item in intents
+        )
+    return None if explained else {"previous": before, "observed": after}
 
 
-def settle_intents(intents: list | None, observed: dict, current: float) -> list:
-    """Drop intents that are expired or already reflected in the observed settings."""
+def settle_intents(intents: list, observed: dict, current: float) -> list:
+    """Drop intents observed applied for longer than the confirmation window."""
     after = settings_of(observed)
-    return [
-        item
-        for item in intents or []
-        if item["at"] > current - INTENT_SECONDS and not _matches(item, after)
-    ]
+    kept = []
+    for item in intents:
+        applied_at = item.get("applied_at")
+        if applied_at is None and _applied(item, after):
+            applied_at = current
+            item = {**item, "applied_at": current}
+        if applied_at is None or applied_at > current - CONFIRM_SECONDS:
+            kept.append(item)
+    return kept

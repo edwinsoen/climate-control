@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, select, update
 
-from climate_control.automation import pause_for_override
+from climate_control.automation import lock_automation, pause_for_override
 from climate_control.config import WorkerSettings
 from climate_control.db import Account, Automation, Device
 from climate_control.display import (
@@ -17,7 +17,7 @@ from climate_control.display import (
     should_display_warning,
 )
 from climate_control.history import prune_readings, record_reading
-from climate_control.overrides import outside_change, record_intent, settle_intents
+from climate_control.overrides import outside_change, recent, record_intent, settle_intents
 from climate_control.providers.base import DeviceCommand, DeviceProvider, PollResult, ProviderError
 from climate_control.security import Vault
 
@@ -224,7 +224,7 @@ class Poller:
                 if claimed and command is not None:
                     # Recorded before dispatch, so a late acknowledgment is still the app's.
                     device.control_intents = record_intent(
-                        device.control_intents, command, current
+                        recent(device.control_intents, current), command, current
                     )
                 db.commit()
                 account = db.get(Account, device.account_id)
@@ -407,18 +407,16 @@ class Poller:
                     and (prev_retrieved_at is None or snapshot.retrieved_at >= prev_retrieved_at)
                 )
                 if fresh_reading:
+                    intents = recent(device.control_intents, current)
                     if comparable and snapshot.retrieved_at - prev_retrieved_at <= max(
                         self.settings.stale_after_seconds,
                         self.settings.poll_interval_seconds * 3,
                     ):
-                        change = outside_change(
-                            previous, device.state, device.control_intents or [], current
-                        )
+                        change = outside_change(previous, device.state, intents)
                         if change:
-                            pause_for_override(db, device.id, current, "external", **change)
-                    device.control_intents = settle_intents(
-                        device.control_intents, device.state, current
-                    )
+                            state = lock_automation(db, device.id)
+                            pause_for_override(db, state, current, "external", **change)
+                    device.control_intents = settle_intents(intents, device.state, current)
                     observed_display = device.state.get("display")
                     if reset_display_mode == snapshot.provider_id:
                         device.display_mode = "manual"

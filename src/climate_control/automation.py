@@ -26,17 +26,21 @@ from climate_control.rules import Ruleset, evaluate
 LEASE_SECONDS = 300
 
 
-def pause_for_override(db, device_id, current, actor, **details):
-    """Pause enabled automation for its configured period after a manual setting change.
-
-    The caller holds the account row lock, so dispatch guards observe the pause.
-    """
+def lock_automation(db, device_id):
+    """Lock and reload a device's automation row; callers hold the account row lock first."""
     db.execute(
         update(Automation)
         .where(Automation.device_id == device_id)
         .values(generation=Automation.generation)
     )
-    state = db.get(Automation, device_id, populate_existing=True)
+    return db.get(Automation, device_id, populate_existing=True)
+
+
+def pause_for_override(db, state, current, actor, **details):
+    """Pause enabled automation for its configured period after a manual setting change.
+
+    `state` must be locked, so dispatch guards observe the pause.
+    """
     if state is None or not state.enabled:
         return
     until = current + state.pause_seconds
@@ -45,13 +49,13 @@ def pause_for_override(db, device_id, current, actor, **details):
     state.generation += 1
     state.lease_token, state.lease_until = None, 0
     # Keep agent proposals valid only if they use the new planning generation.
-    job = db.get(PlanningJob, device_id)
+    job = db.get(PlanningJob, state.device_id)
     if job and job.status in {"pending", "claimed"}:
         job.generation = state.generation
         job.status, job.lease_token, job.lease_until = "pending", None, 0
     db.add(
         AutomationEvent(
-            device_id=device_id,
+            device_id=state.device_id,
             revision=state.revision,
             details={
                 "inhibition": "manual_pause",

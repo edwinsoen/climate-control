@@ -10,7 +10,12 @@ from sqlalchemy import delete
 
 from climate_control.automation import collect_inputs, reconsider
 from climate_control.db import Account, Automation, Device, DeviceReading, PlanningJob
-from climate_control.overrides import INTENT_SECONDS, outside_change
+from climate_control.overrides import (
+    CONFIRM_SECONDS,
+    INTENT_SECONDS,
+    outside_change,
+    settle_intents,
+)
 from climate_control.providers.base import ProviderError
 from climate_control.rules import Ruleset, evaluate
 
@@ -663,13 +668,14 @@ ON2 = {"power": "on", "mode": "manual", "fan_level": 2}
         ({**ON2, "mode": "auto"}, {**ON2, "mode": "auto", "fan_level": 4}, [], False),
         ({**ON2, "power": "off"}, {**ON2, "power": "off", "fan_level": 1}, [], False),
         (ON2, {**ON2, "mode": "sleep"}, [{"mode": "sleep"}], False),
+        # A fan command may report the switch to manual before the new level.
+        ({**ON2, "mode": "auto"}, ON2, [{"fan_level": 3}], False),
+        (ON2, {**ON2, "fan_level": 1}, [{"fan_level": 3}], True),
         (ON2, {**ON2, "power": "unknown"}, [], False),
     ],
 )
 def test_outside_change_attribution(previous, observed, intents, outside):
-    now = time.time()
-    recent = [{**intent, "at": now - 1} for intent in intents]
-    assert bool(outside_change(previous, observed, recent, now)) is outside
+    assert bool(outside_change(previous, observed, intents)) is outside
 
 
 async def test_expired_intent_does_not_explain_a_change(app, signed_client, controlled_device):
@@ -681,3 +687,21 @@ async def test_expired_intent_does_not_explain_a_change(app, signed_client, cont
     app.state.poller.provider.states["home@example.com"] = {"fan_level": 3}
     await read_status(app, controlled_device)
     assert (await signed_client.get(path)).json()["paused_until"] > time.time()
+
+
+def test_confirmed_intent_explains_a_briefly_older_reading():
+    now = time.time()
+    intents = settle_intents([{"fan_level": 3, "at": now}], {**ON2, "fan_level": 3}, now)
+    # A provider serves the old level once, then the confirmed level again.
+    intents = settle_intents(intents, ON2, now + 60)
+    assert not outside_change(ON2, {**ON2, "fan_level": 3}, intents)
+    assert not settle_intents(intents, {**ON2, "fan_level": 3}, now + CONFIRM_SECONDS + 1)
+
+
+async def test_outside_change_keeps_a_longer_pause(app, signed_client, controlled_device):
+    path = await setup_rules(signed_client, controlled_device)
+    response = await signed_client.post(path + "/pause", json={"seconds": 86400})
+    paused_until = response.json()["paused_until"]
+    app.state.poller.provider.states["home@example.com"] = {"fan_level": 1}
+    await read_status(app, controlled_device)
+    assert (await signed_client.get(path)).json()["paused_until"] == paused_until

@@ -163,8 +163,8 @@ def invalidate(db, state):
 
 
 def pause_for_manual(db, device_id, actor="user"):
-    get_state(db, device_id, lock=True)  # Creates the row for older devices.
-    pause_for_override(db, device_id, time.time(), actor)
+    _, state = get_state(db, device_id, lock=True)
+    pause_for_override(db, state, time.time(), actor)
 
 
 class Version(StrictModel):

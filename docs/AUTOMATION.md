@@ -12,7 +12,15 @@ Home turns on Auto for every purifier when none is automated, and pauses or resu
 
 Direct power/fan controls persist an automation pause before dispatch, even if the command fails. The default pause is one hour; users can change its duration ("Changes override Auto for") or pause/resume explicitly.
 
-Power, mode, or fan changes made outside the app, on the device or in the provider's app, pause automation for the same duration. They never shorten a longer pause. The poller records every power, mode, and fan command the app dispatches as an intent before provider I/O and keeps it for 10 minutes. A change between two consecutive fresh online observations is attributed to the app when a recent intent matches the new setting: a power intent explains a power change, and a mode or fan intent explains a mode or level change. Any other change is an outside override. A failed command changes nothing, and a delayed acknowledgment that appears on a later poll still matches its intent, so neither pauses automation. Only configured power, mode, and manual fan level are compared, not the running speed in built-in Auto or settings while off. Changes across offline periods or freshness gaps are not compared, so a purifier that restarts after an outage does not pause automation. The pause event records `actor: "external"` with the previous and observed settings.
+Power, mode, or fan changes made outside the app, on the device or in the provider's app, pause automation for the same duration and never shorten a longer pause. This includes schedules and timers set in the VeSync or Mi Home app, which pause automation each time they change a setting. The pause event records `actor: "external"` with the previous and observed settings.
+
+The poller compares consecutive fresh online observations. A change is the app's when a power, mode, or fan command dispatched in the last 10 minutes explains it. The following do not pause automation:
+
+- A failed command, which changes nothing.
+- A delayed acknowledgment that appears on a later poll, or a fan command observed as a switch to manual before its new level.
+- A confirmed setting that reappears within 90 seconds after the provider briefly served an older reading. The step back to the older reading still counts as an outside change, because it looks the same as a person reverting the setting.
+- Running speed in built-in Auto, and settings reported while off.
+- Changes across a poll that found the device offline, or across a freshness gap. A restart between two polls that both find the device online is still compared.
 
 ## Rule format, version 1
 
