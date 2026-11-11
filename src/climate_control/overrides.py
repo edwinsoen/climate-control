@@ -55,22 +55,24 @@ def _applied(intent: dict, observed: dict) -> bool:
 def outside_change(previous: dict, observed: dict, intents: list, current: float) -> dict | None:
     """The settings change between two fresh observations that no recent app intent explains.
 
-    An exact match explains a change for the intent's lifetime. Partial and rollback
-    observations are excused only for the newest command, unconfirmed and within the
-    confirmation window, so a command that never confirms cannot hide a later change.
+    An exact match explains a change for the intent's lifetime. Commands sent within
+    `CONFIRM_SECONDS` of each other form one change, which while recent also explains a
+    fan command seen before its new level and a rollback that undoes no confirmed command.
     """
     before, after = settings_of(previous), settings_of(observed)
     if before["power"] is None or after["power"] is None:
         return None
-    newest = intents[-1] if intents else None
-    settling = (
-        newest
-        if newest and "applied_at" not in newest and newest["at"] > current - CONFIRM_SECONDS
-        else None
-    )
-    # An unconfirmed command may fail or roll back to the setting it replaced. Once
-    # confirmed, a step back to that setting is a person reverting it.
-    if settling and _same(settling["from"], after):
+    burst, after_at = [], current
+    for item in reversed(intents):
+        if item["at"] <= after_at - CONFIRM_SECONDS:
+            break
+        burst.append(item)
+        after_at = item["at"]
+    # A change may fail or roll back to the setting it replaced. A step back that undoes
+    # a confirmed command is a person reverting it.
+    if any(_same(item["from"], after) for item in burst) and all(
+        _applied(item, after) for item in burst if "applied_at" in item
+    ):
         return None
     if before["power"] != after["power"]:
         # Power commands also carry whatever mode and level the device resumes with.
@@ -90,8 +92,7 @@ def outside_change(previous: dict, observed: dict, intents: list, current: float
             return None
         explained = any("power" not in item and _applied(item, after) for item in intents) or (
             # Providers may report the switch to manual before the new level.
-            settling is not None
-            and "fan_level" in settling
+            any("fan_level" in item and "applied_at" not in item for item in burst)
             and mode_changed
             and after["mode"] == "manual"
         )

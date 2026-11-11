@@ -18,7 +18,7 @@ The poller compares consecutive fresh online observations. A change is the app's
 
 - A failed command, which changes nothing.
 - A delayed acknowledgment that appears on a later poll.
-- Within 90 seconds of the newest command, while it is unconfirmed (its full setting not yet seen on a fresh reading): a switch to manual before a fan command's new level, or a return to the setting the command replaced. Once confirmed, a step back is a person reverting it and pauses automation. Older or never-confirmed commands excuse only an exact match.
+- Commands sent within 90 seconds of each other, such as level 3 then level 4, form one change, and the late arrival of any of them is the app's. While the newest is under 90 seconds old, the change also excuses a switch to manual before a fan command's new level, and a return to the setting a command replaced unless that return undoes a confirmed command. A command is confirmed once its full setting is seen on a fresh reading; undoing it is a person reverting it and pauses automation. Older commands excuse only an exact match.
 - A confirmed setting that reappears within 90 seconds of its confirmation.
 - Running speed in built-in Auto, and settings reported while off.
 - Changes across a poll that found the device offline, or across a freshness gap. A restart between two polls that both find the device online is still compared.

@@ -725,6 +725,33 @@ def test_unconfirmed_command_does_not_hide_later_outside_changes():
     assert outside_change({**ON2, "fan_level": 4}, manual3, intents, now + 3)
 
 
+def test_rapid_commands_confirm_together():
+    now = time.time()
+    level3 = {**ON2, "fan_level": 3}
+    intents = [
+        {"fan_level": 3, "at": now, "from": settings_of(ON2)},
+        {"fan_level": 4, "at": now + 5, "from": settings_of(ON2)},
+    ]
+    # Either level, in either order, is the app's.
+    assert not outside_change(ON2, {**ON2, "fan_level": 4}, intents, now + 10)
+    assert not outside_change({**ON2, "fan_level": 4}, level3, intents, now + 10)
+    # Unconfirmed, a return to level 2 is a rollback.
+    assert not outside_change({**ON2, "mode": "auto"}, ON2, intents, now + 10)
+    # Once level 3 is confirmed, a return to level 2 is a person reverting it.
+    intents = settle_intents(intents, level3, now + 10)
+    assert outside_change(level3, ON2, intents, now + 20)
+
+
+def test_power_then_fan_stage_rolls_back_without_pause():
+    now = time.time()
+    off, auto = {**ON2, "power": "off"}, {**ON2, "mode": "auto", "fan_level": 5}
+    intents = settle_intents([{"power": True, "at": now, "from": settings_of(off)}], auto, now)
+    intents.append({"fan_level": 3, "at": now + 60, "from": settings_of(auto)})
+    half = {**auto, "mode": "manual"}
+    assert not outside_change(auto, half, intents, now + 65)
+    assert not outside_change(half, auto, intents, now + 120)
+
+
 async def test_outside_change_keeps_a_longer_pause(app, signed_client, controlled_device):
     path = await setup_rules(signed_client, controlled_device)
     response = await signed_client.post(path + "/pause", json={"seconds": 86400})
